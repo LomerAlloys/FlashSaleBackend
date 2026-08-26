@@ -20,10 +20,13 @@ async function bootstrap() {
   // เปิดใช้งานตรวจสอบข้อมูลทั่วทั้งแอป
   app.useGlobalPipes(
     new ValidationPipe({
-      whitelist: true, 
-      forbidNonWhitelisted: true, 
+      whitelist: true,
+      forbidNonWhitelisted: true,
     }),
   );
+
+  // ทุก endpoint ขึ้นต้นด้วย /api/v1
+  app.setGlobalPrefix('api/v1');
 
   // ==========================================
   // ตั้งค่า Bull Board สำหรับดูสถานะคิว

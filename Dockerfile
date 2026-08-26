@@ -1,19 +1,26 @@
-﻿# ใช้ Node.js เป็น Base Image
-FROM node:18-alpine
+# ---- Build stage ----
+FROM node:18-alpine AS build
 
-# กำหนดโฟลเดอร์ทำงานภายใน Container
 WORKDIR /usr/src/app
 
-# ก๊อปปี้ไฟล์ package.json และติดตั้ง dependencies
 COPY package*.json ./
 RUN npm install
 
-# ก๊อปปี้โค้ดทั้งหมดลงไป และสั่ง Build
 COPY . .
 RUN npm run build
 
-# เปิดพอร์ต 3000
+# ---- Production stage ----
+FROM node:18-alpine AS production
+
+ENV NODE_ENV=production
+
+WORKDIR /usr/src/app
+
+COPY package*.json ./
+RUN npm install --omit=dev
+
+COPY --from=build /usr/src/app/dist ./dist
+
 EXPOSE 3000
 
-# รันแอปพลิเคชัน
 CMD ["npm", "run", "start:prod"]

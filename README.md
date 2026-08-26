@@ -1,104 +1,213 @@
-<<<<<<< HEAD
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# ⚡ คู่มือการใช้งานระบบ Flash Sale Backend (Master Documentation)
+*(Mobile Backend Architecture & Performance Testing)*
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+คู่มือฉบับนี้จัดทำขึ้นสำหรับอธิบายสถาปัตยกรรม วิธีการติดตั้ง รันเซิร์ฟเวอร์ และการทดสอบ API ของระบบ **Flash Sale Backend** อ้างอิงตามข้อกำหนดในเอกสาร **`Flash Sale System.pdf`**
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+---
 
-## Description
+## 📐 1. ภาพรวมสถาปัตยกรรมระบบ (Architecture Overview)
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+ระบบถูกออกแบบให้รองรับปริมาณคำขอพร้อมกันมหาศาล (**High Throughput & Low Latency**) และการันตีความถูกต้องของข้อมูลสต็อกสินค้า (**Data Integrity & Zero Overbooking**) ประกอบด้วยองค์ประกอบหลักดังนี้:
 
-## Project setup
-
-```bash
-$ npm install
+```text
+                               ┌───────────────────────────┐
+                               │  Client App / k6 Test     │
+                               └─────────────┬─────────────┘
+                                             │ (Port 80)
+                                             ▼
+                               ┌───────────────────────────┐
+                               │    Nginx Load Balancer    │ (Round-Robin / Least-Conn)
+                               └─────────────┬─────────────┘
+                                             │
+                  ┌──────────────────────────┼──────────────────────────┐
+                  ▼                          ▼                          ▼
+       ┌────────────────────┐     ┌────────────────────┐     ┌────────────────────┐
+       │   api1 (NestJS)    │     │   api2 (NestJS)    │     │   api3 (NestJS)    │
+       │    (Instance 1)    │     │    (Instance 2)    │     │    (Instance 3)    │
+       └──────────┬─────────┘     └──────────┬─────────┘     └──────────┬─────────┘
+                  │                          │                          │
+                  ├──────────────────────────┼──────────────────────────┤
+                  │ (Redis Caching & Lock)   │ (BullMQ Order Queue)     │ (Pessimistic Lock)
+                  ▼                          ▼                          ▼
+       ┌────────────────────┐     ┌────────────────────┐     ┌────────────────────┐
+       │    Redis Cache     │     │   BullMQ Queue     │     │  PostgreSQL DB     │
+       │   (Cache-Aside)    │     │  (Order Worker)    │     │ (Master / Replica) │
+       └────────────────────┘     └────────────────────┘     └────────────────────┘
+                                             │
+                                             ▼
+                               ┌───────────────────────────┐
+                               │   Bull-Board Dashboard    │ (http://localhost/admin/queues)
+                               └───────────────────────────┘
 ```
 
-## Compile and run the project
+### 🌟 ฟีเจอร์สำคัญในระบบ:
+1. **Load Balancing (Nginx):** กระจายโหลดคำขอไปยัง 3 Backend Instances ด้วย Round Robin
+2. **Stateless Authentication (JWT):** ยืนยันตัวตนด้วย JSON Web Token (ห้ามใช้ In-memory session)
+3. **Read-Heavy Caching (Redis Cache-Aside):** แคชรายการสินค้า และทำการ **Cache Invalidation** ทันทีเมื่อสต็อกมีการเปลี่ยนแปลง
+4. **API-Level Concurrency Locking (Redis SETNX):** ล็อกสิทธิ์ด้วย Redis Atomic Operation ป้องกันผู้ใช้คนเดิมกดซื้อซ้ำซ้อนเบิ้ลคำขอ
+5. **Asynchronous Order Queue (BullMQ):** ส่งคำสั่งซื้อเข้า Message Queue ตอบกลับ `202 Accepted` ทันทีภายใน `< 50ms`
+6. **Worker DB Stock Deduction:** Worker ตัดสต็อกใน PostgreSQL ด้วย **Pessimistic Write Locking (`pessimistic_write`)** การันตีว่าสต็อกห้ามติดลบเด็ดขาด
 
-```bash
-# development
-$ npm run start
+---
 
-# watch mode
-$ npm run start:dev
+## 📂 2. โครงสร้างโฟลเดอร์โปรเจกต์ (Project Directory)
 
-# production mode
-$ npm run start:prod
+```text
+FlashSaleBackend/
+├── doc/
+│   ├── Flash Sale System.pdf   <-- เอกสารโจทย์หลัก
+│   ├── products-seed.json      <-- ข้อมูลสินค้าเริ่มต้น (Auto-seed)
+│   ├── loadtest.js             <-- k6 Script สำหรับยิง Load Test
+│   └── FlashSale_Guide.md      <-- คู่มือนี้
+├── src/
+│   ├── auth/                   <-- ระบบ JWT Authentication (POST /api/v1/auth/token)
+│   ├── products/               <-- ระบบจัดการและแคชสินค้า (GET /api/v1/products)
+│   ├── orders/                 <-- ระบบคิวสั่งซื้อและ Worker (POST /api/v1/orders)
+│   ├── app.module.ts
+│   └── main.ts                 <-- มีการเปิด Bull-Board Monitoring
+├── docker-compose.yml           <-- Nginx + 3 API Instances + PostgreSQL Master/Replica + Redis
+├── nginx.conf                  <-- ค่านิวฟิก Nginx Load Balancer
+├── .env                        <-- การตั้งค่าตัวแปรระบบ
+└── package.json
 ```
 
-## Run tests
+---
+
+## 🚀 3. วิธีการรันโปรเจกต์ (How to Run)
+
+### 🔹 วิธีที่ 1: รันทั้งระบบด้วย Docker Compose (แนะนำ 1-Click Start)
+
+เปิด Terminal แล้วย้ายไปที่โฟลเดอร์โปรเจกต์ `FlashSaleBackend`:
 
 ```bash
-# unit tests
-$ npm run test
+cd "C:\Users\ASUS\Desktop\beckend\moblie\FlashSaleBackend"
 
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+# สั่ง Build และเปิดบริการทั้งหมด (Nginx + 3 APIs + Postgres + Redis)
+docker-compose up -d --build
 ```
 
-## Deployment
+เช็คสถานะการรัน:
+```bash
+docker ps
+```
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+---
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### 🔹 วิธีที่ 2: รันเฉพาะระบบฐานข้อมูล แล้วรัน NestJS บนเครื่อง (Development Mode)
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+cd "C:\Users\ASUS\Desktop\beckend\moblie\FlashSaleBackend"
+
+# เปิดเฉพาะ Postgres DB และ Redis
+docker-compose up -d db-primary redis
+
+# สั่งรันแอป NestJS ในโหมด Watch
+npm run start:dev
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+---
 
-## Resources
+## 🔌 4. รายละเอียด API Endpoints & วิธีการทดสอบ
 
-Check out a few resources that may come in handy when working with NestJS:
+ Prefix หลักของทุก API คือ **`/api/v1`**
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+### 1️⃣ ขอ JWT Token (Authentication)
+* **Endpoint:** `POST /api/v1/auth/token`
+* **Request Body:**
+  ```json
+  { "userId": "user-999" }
+  ```
+* **PowerShell Test:**
+  ```powershell
+  Invoke-RestMethod -Uri "http://localhost/api/v1/auth/token" -Method Post -ContentType "application/json" -Body '{"userId": "user-999"}'
+  ```
+* **Response (200 OK):**
+  ```json
+  {
+    "status": "success",
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR..."
+  }
+  ```
 
-## Support
+---
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+### 2️⃣ ดึงรายการสินค้า (Read-Heavy Cache-Aside)
+* **Endpoint:** `GET /api/v1/products?page=1&limit=10`
+* **PowerShell Test:**
+  ```powershell
+  Invoke-RestMethod -Uri "http://localhost/api/v1/products?page=1&limit=10" -Method Get
+  ```
+* **Response (200 OK):**
+  ```json
+  {
+    "status": "success",
+    "data": [
+      {
+        "productId": "p-1001",
+        "name": "Limited Edition Sneaker",
+        "price": 2990,
+        "availableStock": 50,
+        "remainingStock": 50,
+        "isFlashSaleActive": true
+      }
+    ],
+    "meta": {
+      "total": 20,
+      "page": 1,
+      "limit": 10,
+      "totalPages": 2
+    }
+  }
+  ```
 
-## Stay in touch
+---
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+### 3️⃣ สั่งซื้อสินค้า Flash Sale (Write-Heavy Asynchronous Order)
+* **Endpoint:** `POST /api/v1/orders`
+* **Headers:** `Authorization: Bearer <accessToken>`
+* **Request Body:**
+  ```json
+  { "productId": "p-1001" }
+  ```
+* **PowerShell Test:**
+  ```powershell
+  # 1. ขอ Token
+  $token = (Invoke-RestMethod -Uri "http://localhost/api/v1/auth/token" -Method Post -ContentType "application/json" -Body '{"userId": "user-001"}').accessToken
 
-## License
+  # 2. สั่งซื้อสินค้า p-1001
+  Invoke-RestMethod -Uri "http://localhost/api/v1/orders" -Method Post -Headers @{ "Authorization" = "Bearer $token" } -ContentType "application/json" -Body '{"productId": "p-1001"}'
+  ```
+* **Response (202 Accepted):**
+  ```json
+  {
+    "status": "processing",
+    "orderJobId": "job-1",
+    "message": "Your order is in the queue."
+  }
+  ```
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
-=======
-# FlashSaleBackend
-## chat I'm in ##
-## lmao
->>>>>>> bd552709445390c97d3e8e41e878be4f4f07f2a8
+---
+
+## 📊 5. Observability & Queue Dashboard (Bull-Board)
+
+สามารถเปิดดูสถานะการทำงานของคิว (Jobs in Queue, Active, Completed, Failed) ได้ผ่านหน้าเว็บ Dashboard:
+
+👉 **[http://localhost/admin/queues](http://localhost/admin/queues)** (หรือ `http://localhost:3000/admin/queues`)
+
+---
+
+## 🧪 6. วิธีการรัน Load Test ด้วย k6
+
+ติดตั้งเครื่องมือ `k6` จากนั้นรันไฟล์สคริปต์ทดสอบ:
+
+```bash
+k6 run doc/loadtest.js
+```
+
+### สิ่งที่สคริปต์ k6 ทำการทดสอบ:
+1. **Preparation Phase:** วนลูปขอ JWT Token ให้ผู้ใช้ 500 คน (`user-1` ถึง `user-500`)
+2. **Read Load:** ยิงทดสอบอ่านรายการสินค้า 1,000 requests
+3. **Write Load:** ยิง 500 Concurrent Requests แย่งกันกดสั่งซื้อสินค้า `p-1001` (ซึ่งมีสต็อก 50 ชิ้น) พร้อมกัน
+4. **Data Integrity Verification:**
+   * สต็อกคงเหลือของ `p-1001` ในฐานข้อมูลต้องลดลงเหลือ `0` พอดี ห้ามติดลบ
+   * ในตาราง `orders` ต้องมี Record สั่งซื้อสำเร็จ 50 รายการ และผู้ใช้แต่ละคนต้องไม่ซ้ำกัน

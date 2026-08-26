@@ -8,7 +8,7 @@ services:
       - POSTGRESQL_REPLICATION_PASSWORD=repl_password
       - POSTGRESQL_USERNAME=myuser
       - POSTGRESQL_PASSWORD=mypassword
-      - POSTGRESQL_DATABASE=student_db
+      - POSTGRESQL_DATABASE=flash_sale_db
     ports:
       - "5432:5432"
 
@@ -49,7 +49,7 @@ services:
       - DB_PORT=5432
       - DB_USER=myuser
       - DB_PASSWORD=mypassword
-      - DB_NAME=student_db
+      - DB_NAME=flash_sale_db
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
@@ -69,7 +69,7 @@ services:
       - DB_PORT=5432
       - DB_USER=myuser
       - DB_PASSWORD=mypassword
-      - DB_NAME=student_db
+      - DB_NAME=flash_sale_db
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
@@ -89,7 +89,7 @@ services:
       - DB_PORT=5432
       - DB_USER=myuser
       - DB_PASSWORD=mypassword
-      - DB_NAME=student_db
+      - DB_NAME=flash_sale_db
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:

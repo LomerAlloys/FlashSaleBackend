@@ -32,14 +32,14 @@ import { OrdersModule } from './orders/orders.module';
       },
     }),
 
-    // 🗄️ PostgreSQL Database Connection (พร้อมตั้งค่า Fallbacks ป้องกัน Error)
+    // 🗄️ PostgreSQL Database Connection (ใช้ชื่อ flash_sale_db)
     TypeOrmModule.forRoot({
       type: 'postgres',
       host: process.env.DB_HOST || process.env.DB_MASTER_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT || '5432', 10),
       username: String(process.env.DB_USER || 'myuser'),
       password: String(process.env.DB_PASSWORD || 'mypassword'),
-      database: String(process.env.DB_NAME || 'student_db'),
+      database: String(process.env.DB_NAME || 'flash_sale_db'),
       entities: [Product, Order],
       synchronize: true, // 🔄 ล้างและสร้าง Schema ใหม่ให้อัตโนมัติตาม Entity
       extra: {

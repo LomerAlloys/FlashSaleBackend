@@ -5,49 +5,49 @@ import { CacheModule } from '@nestjs/cache-manager';
 import { redisStore } from 'cache-manager-redis-yet';
 import { BullModule } from '@nestjs/bull';
 import { Redis } from 'ioredis';
-
-// 📌 1. Import เครื่องมือทำ Structured Log (Part 6)
 import { LoggerModule } from 'nestjs-pino';
 import { randomUUID } from 'crypto';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { StudentsModule } from './students/students.module';
-import { Student } from './students/entities/student.entity';
+import { Product } from './products/entities/product.entity';
+import { Order } from './orders/entities/order.entity';
+
+import { AuthModule } from './auth/auth.module';
+import { ProductsModule } from './products/products.module';
+import { OrdersModule } from './orders/orders.module';
 
 @Global()
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     
-    // 📌 2. เพิ่ม LoggerModule เพื่อสร้าง JSON Log ที่มี Correlation ID (Part 6)
+    // 📌 Structured Log (Pino)
     LoggerModule.forRoot({
       pinoHttp: {
-        // สร้าง Correlation ID ให้ทุก Request
         genReqId: (req) => req.headers['x-correlation-id'] || randomUUID(),
-        // แนบ Instance ID ไปกับ Log ทุกบรรทัด
-        customProps: (req, res) => ({
+        customProps: () => ({
           instanceId: process.env.INSTANCE_ID || 'Unknown Instance',
         }),
       },
     }),
 
-    // ตั้งค่า TypeORM — postgres ตัวเดียว (ไม่มี replication)
+    // 🗄️ PostgreSQL Database Connection (พร้อมตั้งค่า Fallbacks ป้องกัน Error)
     TypeOrmModule.forRoot({
       type: 'postgres',
       host: process.env.DB_HOST || process.env.DB_MASTER_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT || '5432', 10),
-      username: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-      database: process.env.DB_NAME,
-      entities: [Student],
-      synchronize: false,
+      username: String(process.env.DB_USER || 'myuser'),
+      password: String(process.env.DB_PASSWORD || 'mypassword'),
+      database: String(process.env.DB_NAME || 'student_db'),
+      entities: [Product, Order],
+      synchronize: true, // 🔄 ล้างและสร้าง Schema ใหม่ให้อัตโนมัติตาม Entity
       extra: {
         max: 15,
       },
     }),
     
-    // ตั้งค่า CacheModule
+    // 🔴 Redis CacheModule
     CacheModule.registerAsync({
       isGlobal: true,
       useFactory: async () => ({
@@ -61,7 +61,7 @@ import { Student } from './students/entities/student.entity';
       }),
     }),
 
-    // ตั้งค่า BullModule ให้เชื่อมต่อกับ Redis
+    // 📨 BullMQ Configuration
     BullModule.forRoot({
       redis: {
         host: process.env.REDIS_HOST || 'localhost',
@@ -69,17 +69,9 @@ import { Student } from './students/entities/student.entity';
       },
     }),
     
-    // สร้างคิวชื่อ 'email' และตั้งค่า Retry
-    BullModule.registerQueue({
-      name: 'email',
-      defaultJobOptions: {
-        attempts: 3, 
-        backoff: { type: 'exponential', delay: 1000 }, 
-        removeOnComplete: true, 
-      },
-    }),
-
-    StudentsModule,
+    AuthModule,
+    ProductsModule,
+    OrdersModule,
   ],
   controllers: [AppController],
   providers: [
@@ -93,21 +85,7 @@ import { Student } from './students/entities/student.entity';
         });
       },
     },
-    {
-      provide: 'REDIS_PUBLISHER',
-      useFactory: () => new Redis({ 
-        host: process.env.REDIS_HOST || 'localhost', 
-        port: parseInt(process.env.REDIS_PORT || '6379', 10) 
-      }),
-    },
-    {
-      provide: 'REDIS_SUBSCRIBER',
-      useFactory: () => new Redis({ 
-        host: process.env.REDIS_HOST || 'localhost', 
-        port: parseInt(process.env.REDIS_PORT || '6379', 10) 
-      }),
-    },
   ],
-  exports: ['REDIS_CLIENT', 'REDIS_PUBLISHER', 'REDIS_SUBSCRIBER', BullModule], 
+  exports: ['REDIS_CLIENT', BullModule], 
 })
 export class AppModule {}

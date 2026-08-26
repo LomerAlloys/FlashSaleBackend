@@ -8,7 +8,7 @@ import { Redis } from 'ioredis';
 
 // 📌 1. Import เครื่องมือทำ Structured Log (Part 6)
 import { LoggerModule } from 'nestjs-pino';
-import { v4 as uuidv4 } from 'uuid'; 
+import { randomUUID } from 'crypto';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -24,39 +24,27 @@ import { Student } from './students/entities/student.entity';
     LoggerModule.forRoot({
       pinoHttp: {
         // สร้าง Correlation ID ให้ทุก Request
-        genReqId: (req) => req.headers['x-correlation-id'] || uuidv4(),
+        genReqId: (req) => req.headers['x-correlation-id'] || randomUUID(),
         // แนบ Instance ID ไปกับ Log ทุกบรรทัด
         customProps: (req, res) => ({
           instanceId: process.env.INSTANCE_ID || 'Unknown Instance',
         }),
-        // ปรับรูปแบบให้อ่านง่ายตอนรันโหมด Dev (ถ้าอยากได้ JSON ดิบๆ ให้ลบบรรทัดนี้ทิ้ง)
-        transport: process.env.NODE_ENV !== 'production' ? { target: 'pino-pretty' } : undefined,
       },
     }),
 
-    // 📌 ตั้งค่า TypeORM Replication (Read-Write Split จาก Part 5)
+    // ตั้งค่า TypeORM — postgres ตัวเดียว (ไม่มี replication)
     TypeOrmModule.forRoot({
       type: 'postgres',
-      replication: {
-        master: {
-          host: process.env.DB_MASTER_HOST || 'localhost',
-          port: parseInt(process.env.DB_PORT || '5432', 10),
-          username: process.env.DB_USER,
-          password: process.env.DB_PASSWORD,
-          database: process.env.DB_NAME,
-        },
-        slaves: [
-          {
-            host: process.env.DB_REPLICA_HOST || 'localhost',
-            port: parseInt(process.env.DB_PORT || '5432', 10),
-            username: process.env.DB_USER,
-            password: process.env.DB_PASSWORD,
-            database: process.env.DB_NAME,
-          },
-        ],
-      },
+      host: process.env.DB_HOST || process.env.DB_MASTER_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT || '5432', 10),
+      username: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
       entities: [Student],
-      synchronize: true, 
+      synchronize: false,
+      extra: {
+        max: 15,
+      },
     }),
     
     // ตั้งค่า CacheModule

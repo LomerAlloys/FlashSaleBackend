@@ -1,26 +1,27 @@
-import { Processor, Process, OnQueueActive, OnQueueCompleted, OnQueueFailed } from '@nestjs/bull';
-import type { Job } from 'bull';
+import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
+import type { Job } from 'bullmq';
 import { Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
-import { Product } from '../products/entities/product.entity';
-import { Order } from './entities/order.entity';
+import { Product } from '../entities/product.entity';
+import { Order } from '../entities/order.entity';
 import { ProductsService } from '../products/products.service';
 
-@Processor('orders')
-export class OrdersProcessor {
-  private readonly logger = new Logger(OrdersProcessor.name);
+@Processor('order-queue')
+export class OrderProcessor extends WorkerHost {
+  private readonly logger = new Logger(OrderProcessor.name);
 
   constructor(
     private readonly dataSource: DataSource,
     private readonly productsService: ProductsService,
-  ) {}
+  ) {
+    super();
+  }
 
-  @Process('process-order')
-  async handleOrder(job: Job) {
+  async process(job: Job): Promise<any> {
     const { userId, productId } = job.data;
     this.logger.log(`⚙️ [Processing Order Job ${job.id}] User: ${userId}, Product: ${productId}`);
 
-    return await this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       // 🔒 Concurrency Handling (Worker/Database Level - Slide 3 in Spec PDF)
       // 1. อ่านข้อมูลสินค้าพร้อมใส่ Pessimistic Write Lock เพื่อป้องกัน Race Condition สต็อกติดลบ
       const product = await manager.findOne(Product, {
@@ -67,29 +68,31 @@ export class OrdersProcessor {
 
       this.logger.log(`✅ [Order Completed] User ${userId} successfully ordered ${productId}! Stock left: ${product.remainingStock}`);
 
-      // 🧹 5. Cache Invalidation: ลบแคชรายการสินค้า เพื่อให้ API GET /products แสดงสต็อกล่าสุด
-      await this.productsService.invalidateProductCache();
-
       return {
         success: true,
         orderId: order.id,
         remainingStock: product.remainingStock,
       };
     });
+
+    // 🧹 Cache Invalidation: ทำหลังจาก transaction commit สำเร็จแล้วเท่านั้น
+    await this.productsService.invalidateProductCache();
+
+    return result;
   }
 
-  @OnQueueActive()
+  @OnWorkerEvent('active')
   onActive(job: Job) {
     this.logger.log(`🟡 [Order Job Active] Job ${job.id} started processing.`);
   }
 
-  @OnQueueCompleted()
-  onCompleted(job: Job, result: any) {
+  @OnWorkerEvent('completed')
+  onCompleted(job: Job) {
     this.logger.log(`🟢 [Order Job Completed] Job ${job.id} finished successfully!`);
   }
 
-  @OnQueueFailed()
-  onFailed(job: Job, error: Error) {
-    this.logger.error(`🔴 [Order Job Failed] Job ${job.id} failed: ${error.message}`);
+  @OnWorkerEvent('failed')
+  onFailed(job: Job | undefined, error: Error) {
+    this.logger.error(`🔴 [Order Job Failed] Job ${job?.id}: ${error.message}`);
   }
 }

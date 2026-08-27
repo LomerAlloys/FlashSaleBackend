@@ -1,14 +1,15 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { ValidationPipe } from '@nestjs/common'; 
+import { ValidationPipe } from '@nestjs/common';
 import { Logger } from 'nestjs-pino';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 // นำเข้าเครื่องมือสำหรับ Bull Board (Monitoring)
 import { ExpressAdapter } from '@bull-board/express';
 import { createBullBoard } from '@bull-board/api';
-import { BullAdapter } from '@bull-board/api/bullAdapter';
-import { getQueueToken } from '@nestjs/bull';
-import type { Queue } from 'bull';
+import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
+import { getQueueToken } from '@nestjs/bullmq';
+import type { Queue } from 'bullmq';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
@@ -26,6 +27,9 @@ async function bootstrap() {
   // ตั้งค่า Prefix ทุก Endpoint เป็น /api/v1 (ตามข้อกำหนด API Specs)
   app.setGlobalPrefix('api/v1');
 
+  // แปลง error response ให้ตรงตาม CONTRACT.md ({status:"error"|"duplicate", message})
+  app.useGlobalFilters(new HttpExceptionFilter());
+
   // ==========================================
   // ตั้งค่า Bull Board Dashboard สำหรับดูสถานะคิว
   // ==========================================
@@ -33,9 +37,9 @@ async function bootstrap() {
   serverAdapter.setBasePath('/admin/queues'); 
 
   try {
-    const ordersQueue = app.get<Queue>(getQueueToken('orders'));
+    const ordersQueue = app.get<Queue>(getQueueToken('order-queue'));
     createBullBoard({
-      queues: [new BullAdapter(ordersQueue)],
+      queues: [new BullMQAdapter(ordersQueue)],
       serverAdapter,
     });
     app.use('/admin/queues', serverAdapter.getRouter());

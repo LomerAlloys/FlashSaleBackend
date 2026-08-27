@@ -1,6 +1,7 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, Check } from 'typeorm';
 
 @Entity('products')
+@Check('"remainingStock" >= 0')
 export class Product {
   @PrimaryGeneratedColumn('uuid')
   id: string;

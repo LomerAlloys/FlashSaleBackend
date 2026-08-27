@@ -1,15 +1,17 @@
-import { Injectable, BadRequestException, ConflictException, Inject, Logger } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bull';
-import type { Queue } from 'bull';
+import { Injectable, BadRequestException, ConflictException, NotFoundException, Inject, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import type { Queue } from 'bullmq';
 import Redis from 'ioredis';
+import { ProductsService } from '../products/products.service';
 
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
 
   constructor(
-    @InjectQueue('orders') private readonly ordersQueue: Queue,
+    @InjectQueue('order-queue') private readonly ordersQueue: Queue,
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
+    private readonly productsService: ProductsService,
   ) {}
 
   async createOrder(userId: string, productId: string) {
@@ -17,10 +19,16 @@ export class OrdersService {
       throw new BadRequestException('productId is required');
     }
 
+    // เช็คว่ามี productId นี้จริงไหม (อ่านอย่างเดียว ไม่ผิดกฎ "ห้ามเขียน DB" ของ controller)
+    const productExists = await this.productsService.exists(productId);
+    if (!productExists) {
+      throw new NotFoundException(`Product ${productId} not found`);
+    }
+
     // 🔒 Concurrency Handling (API Level - Slide 3 in Spec PDF)
     // 1. Limit 1 per User: ใช้อัลกอริทึม Atomic SETNX ของ Redis ล็อกสิทธิ์ไม่ให้ผู้ใช้ส่ง Request เบิ้ล/สั่งซื้อซ้ำ
-    const userOrderLockKey = `user:order:${userId}:${productId}`;
-    const acquired = await this.redis.set(userOrderLockKey, '1', 'EX', 86400, 'NX');
+    const userOrderLockKey = `lock:order:${userId}:${productId}`;
+    const acquired = await this.redis.set(userOrderLockKey, '1', 'EX', 60, 'NX');
 
     if (!acquired) {
       this.logger.warn(`🚫 Concurrency Blocked: User ${userId} already submitted order for ${productId}`);
@@ -32,8 +40,11 @@ export class OrdersService {
       'process-order',
       { userId, productId },
       {
+        // BullMQ ห้ามใส่ ":" ใน custom jobId (Redis จองไว้เป็น separator ภายในของคิวเอง)
+        // ใช้ "_" แทนตามที่ตกลงกับทีม (CONTRACT.md เขียนไว้เป็น ":" แต่ทำจริงไม่ได้)
+        jobId: `${userId}_${productId}`,
         attempts: 3,
-        backoff: { type: 'exponential', delay: 1000 },
+        backoff: { type: 'exponential', delay: 200 },
         removeOnComplete: false,
         removeOnFail: false,
       },

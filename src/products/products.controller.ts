@@ -14,4 +14,10 @@ export class ProductsController {
     const limitNum = parseInt(limit, 10) || 10;
     return this.productsService.findAll(pageNum, limitNum);
   }
+
+  // 📊 Cache Hit/Miss Ratio สำหรับ Dashboard/Report
+  @Get('cache-stats')
+  getCacheStats() {
+    return this.productsService.getCacheStats();
+  }
 }

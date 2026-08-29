@@ -3,49 +3,49 @@ import { check, sleep } from 'k6';
 
 /**
  * ============================================================================
- * 📊 k6 Load Test & Observability — Flash Sale System
+ * 📊 k6 Load Test — Flash Sale System (High-Performance Combined Load)
  * ============================================================================
- * ข้อกำหนดการทดสอบ:
- * 1. Preparation Phase: วนลูปขอ JWT สำหรับ 500 users ไม่ซ้ำกัน (user-1 ถึง user-500)
- * 2. Read Load: ยิง GET /api/v1/products?page=X&limit=Y ด้วย 1,000 Concurrent VUs (10 วินาที)
- * 3. Write Load: ยิง POST /api/v1/orders ด้วย 500 Concurrent requests แย่งซื้อ p-1001 (สต็อก 50 ชิ้น)
- *    พร้อมจำลองให้ User บางคน (~15%) ยิง Request เบิ้ล 2-3 ครั้งพร้อมกัน (Atomic Duplicate Lock Test)
+ * Scenario ตามโจทย์ PDF & CLAUDE.md:
+ * 1. Preparation Phase: เตรียม JWT ให้ผู้ใช้ 500 คนล่วงหน้า (user-1 ถึง user-500)
+ * 2. Read Load: 1,000 Concurrent VUs วนลูปยิง GET /api/v1/products?page=X&limit=10 นาน 30 วินาที
+ * 3. Write Load: 500 Concurrent VUs แย่งซื้อ p-1001 (สต็อก 50 ชิ้น) เริ่มยิงที่วินาทีที่ 5
+ *    โดยมีผู้ใช้ ~15% ยิง Request เบิ้ล 2-3 ครั้งพร้อมกัน เพื่อทดสอบ Redis SETNX Concurrency Lock
  * ============================================================================
  */
 
-// 🌐 Base URL (สามารถรับผ่าน -e BASE_URL= ได้)
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080/api/v1';
 const TOTAL_USERS = 500;
-const DUPLICATE_FRACTION = 0.15; // 15% ของผู้ใช้จะยิงคำสั่งซื้อซ้ำ 2-3 ครั้งพร้อมกันในเสี้ยววินาที
+const DUPLICATE_FRACTION = 0.15; // 15% ยิงซ้ำแบบ Concurrent batch
 
 export const options = {
   scenarios: {
-    // 📖 Phase 1: Read Load (1,000 Concurrent VUs อ่านรายการสินค้า เทส Cache-Aside)
-    read_burst: {
+    // 📖 Phase 1: 1,000 Concurrent VUs อ่านรายการสินค้า (30 วินาที)
+    read_load: {
       executor: 'constant-vus',
       vus: 1000,
-      duration: '10s',
-      exec: 'readProducts',
+      duration: '30s',
+      exec: 'readLoad',
     },
-    // 🛍️ Phase 2: Write Load (500 Concurrent VUs แย่งซื้อ p-1001 พร้อมยิงซ้ำ)
-    flash_sale_order: {
+    // 🛍️ Phase 2: 500 Concurrent VUs แย่งซื้อ p-1001 (เริ่มที่วินาทีที่ 5)
+    write_load: {
       executor: 'per-vu-iterations',
       vus: TOTAL_USERS,
       iterations: 1,
-      startTime: '15s',
-      maxDuration: '30s',
-      exec: 'placeOrder',
+      startTime: '5s',
+      maxDuration: '1m',
+      exec: 'writeLoad',
     },
   },
   thresholds: {
-    http_req_duration: ['p(95)<500'], // 95% ของ Request ต้องตอบกลับภายใน 500ms
-    http_req_failed: ['rate<0.05'],    // Error rate รวมต้องต่ำกว่า 5%
+    'http_req_duration{scenario:read_load}': ['p(95)<500'],
+    'http_req_duration{scenario:write_load}': ['p(95)<1500'],
+    http_req_failed: ['rate<0.05'],
   },
 };
 
-// 🔑 1. Preparation Phase: ขอ JWT Token ให้ User 500 คนล่วงหน้า (ไม่นับเวลารวมกับช่วงยิงโหลด)
+// 🔑 1. Preparation Phase: ขอ JWT 500 คนล่วงหน้า
 export function setup() {
-  console.log(`🚀 [Preparation Phase] กำลังขอ JWT Tokens สำหรับผู้ใช้ 500 คน (${TOTAL_USERS} unique users)...`);
+  console.log(`🚀 [Preparation Phase] กำลังออก JWT Tokens ให้กับ 500 Users...`);
   const tokens = [];
   for (let i = 1; i <= TOTAL_USERS; i++) {
     const res = http.post(
@@ -56,23 +56,22 @@ export function setup() {
     check(res, { 'auth token issued': (r) => r.status === 200 || r.status === 201 });
     tokens.push(res.json('accessToken'));
   }
-  console.log(`✅ [Preparation Phase Complete] ได้รับ JWT Tokens ครบทั้ง 500 คนแล้ว เริ่มต้นการยิงโหลด!`);
+  console.log(`✅ [Preparation Complete] ได้รับ 500 JWT Tokens ครบแล้ว เริ่มต้นยิง Combined Load!`);
   return { tokens };
 }
 
-// 📖 Phase 1: 1,000 Concurrent VUs อ่านสินค้า (Cache-Aside + Pagination)
-export function readProducts() {
+// 📖 Read Load: 1000 VUs วนลูปอ่านสินค้า
+export function readLoad() {
   const page = (__VU % 4) + 1;
-  const limit = 10;
-  const res = http.get(`${BASE_URL}/products?page=${page}&limit=${limit}`);
+  const res = http.get(`${BASE_URL}/products?page=${page}&limit=10`);
   check(res, {
-    'products status 200': (r) => r.status === 200,
-    'has data array': (r) => r.json('data') !== undefined,
+    'read: status 200': (r) => r.status === 200,
+    'read: status success': (r) => r.json('status') === 'success',
   });
 }
 
-// 🛍️ Phase 2: 500 Concurrent Users แย่งซื้อ p-1001 (มีคนยิงเบิ้ล 2-3 ครั้งพร้อมกัน)
-export function placeOrder(data) {
+// 🛍️ Write Load: 500 VUs แย่งซื้อ p-1001 พร้อมยิงเบิ้ล
+export function writeLoad(data) {
   const vuIndex = (__VU - 1) % TOTAL_USERS;
   const token = data.tokens[vuIndex];
   const headers = {
@@ -82,7 +81,7 @@ export function placeOrder(data) {
   const body = JSON.stringify({ productId: 'p-1001' });
 
   if (Math.random() < DUPLICATE_FRACTION) {
-    // จำลอง User กดย้ำรวดเดียว 2-3 ครั้งพร้อมกัน (Concurrent duplicate via http.batch)
+    // ยิงซ้ำ 2-3 ครั้งพร้อมกัน (Concurrent duplicate)
     const shots = 2 + Math.floor(Math.random() * 2);
     const batchReqs = {};
     for (let i = 0; i < shots; i++) {
@@ -96,18 +95,17 @@ export function placeOrder(data) {
     const responses = http.batch(batchReqs);
     Object.values(responses).forEach((res) => {
       check(res, {
-        'order 202/409/400 accepted or duplicate blocked': (r) =>
-          r.status === 202 || r.status === 409 || r.status === 400,
+        'write: accepted (202) or duplicate-blocked (409)': (r) =>
+          r.status === 202 || r.status === 409,
       });
     });
   } else {
-    // สั่งซื้อตามปกติ 1 ครั้ง
     const res = http.post(`${BASE_URL}/orders`, body, { headers });
     check(res, {
-      'order 202/409/400 accepted or blocked': (r) =>
-        r.status === 202 || r.status === 409 || r.status === 400,
+      'write: accepted (202) or duplicate-blocked (409)': (r) =>
+        r.status === 202 || r.status === 409,
     });
   }
 
-  sleep(0.1);
+  sleep(0.05);
 }

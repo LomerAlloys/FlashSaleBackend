@@ -8,6 +8,14 @@ services:
       - POSTGRESQL_DATABASE=flash_sale_db
     ports:
       - "5432:5432"
+    volumes:
+      - postgres-data:/bitnami/postgresql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myuser -d flash_sale_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
   # 📌 2. Redis
   redis:
@@ -34,8 +42,10 @@ services:
       - REDIS_PORT=6379
       - JWT_SECRET=local-dev-flash-sale-jwt-secret-do-not-use-in-prod
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   # 📌 4. API Instance 2
   api2:
@@ -53,8 +63,10 @@ services:
       - REDIS_PORT=6379
       - JWT_SECRET=local-dev-flash-sale-jwt-secret-do-not-use-in-prod
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   # 📌 5. API Instance 3
   api3:
@@ -72,8 +84,10 @@ services:
       - REDIS_PORT=6379
       - JWT_SECRET=local-dev-flash-sale-jwt-secret-do-not-use-in-prod
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   # 📌 6. Nginx Load Balancer
   nginx:
@@ -89,3 +103,4 @@ services:
 
 volumes:
   redis-data:
+  postgres-data:

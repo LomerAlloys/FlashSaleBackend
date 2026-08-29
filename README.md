@@ -11,10 +11,10 @@
                                ┌───────────────────────────┐
                                │  Client App / k6 Test     │
                                └─────────────┬─────────────┘
-                                             │ (Port 80)
+                                             │ (Port 8080)
                                              ▼
                                ┌───────────────────────────┐
-                               │    Nginx Load Balancer    │ (Round-Robin / Least-Conn)
+                               │    Nginx Load Balancer    │ (least_conn)
                                └─────────────┬─────────────┘
                                              │
                   ┌──────────────────────────┼──────────────────────────┐
@@ -28,18 +28,19 @@
                   │ (Redis Caching & Lock)   │ (BullMQ Order Queue)     │ (Pessimistic Lock)
                   ▼                          ▼                          ▼
        ┌────────────────────┐     ┌────────────────────┐     ┌────────────────────┐
-       │    Redis Cache     │     │   BullMQ Queue     │     │  PostgreSQL DB     │
-       │   (Cache-Aside)    │     │  (Order Worker)    │     │ (Master / Replica) │
+       │    Redis Cache     │     │   BullMQ Queue     │     │  PostgreSQL (1 node)│
+       │   (Cache-Aside)    │     │  (Order Worker)     │     │  ไม่ใช้ replica     │
        └────────────────────┘     └────────────────────┘     └────────────────────┘
                                              │
                                              ▼
                                ┌───────────────────────────┐
-                               │   Bull-Board Dashboard    │ (http://localhost/admin/queues)
+                               │   Bull-Board Dashboard    │
+                               │ http://localhost:8080/admin/queues
                                └───────────────────────────┘
 ```
 
 ### 🌟 ฟีเจอร์สำคัญในระบบ:
-1. **Load Balancing (Nginx):** กระจายคำขอไปยัง 3 Backend Instances แบบ Round-Robin
+1. **Load Balancing (Nginx):** กระจายคำขอไปยัง 3 Backend Instances แบบ **Least Connection**
 2. **Stateless Authentication (JWT):** ยืนยันตัวตนด้วย JSON Web Token
 3. **Read-Heavy Caching (Redis Cache-Aside):** แคชรายการสินค้า และทำการ **Cache Invalidation** ทันทีเมื่อสต็อกมีการอัปเดต
 4. **API-Level Concurrency Locking (Redis SETNX):** ล็อกสิทธิ์ด้วย Redis Atomic Operation ป้องกันผู้ใช้คนเดิมกดซื้อซ้ำซ้อน
@@ -53,16 +54,16 @@
 ```text
 FlashSaleBackend/
 ├── src/
-│   ├── auth/                   <-- ระบบ JWT Authentication (POST /api/v1/auth/token)
-│   ├── products/               <-- ระบบจัดการและแคชสินค้า (GET /api/v1/products)
-│   ├── orders/                 <-- ระบบคิวสั่งซื้อและ Worker (POST /api/v1/orders)
+│   ├── auth/                   <-- JWT (POST /api/v1/auth/token)
+│   ├── products/               <-- Cache-Aside GET /api/v1/products
+│   ├── orders/                 <-- lock + enqueue (POST /api/v1/orders)
+│   ├── worker/                 <-- BullMQ ตัดสต็อก
 │   ├── app.module.ts
-│   └── main.ts                 <-- มีการเปิด Bull-Board Monitoring
-├── docker-compose.yml           <-- Nginx + 3 API Instances + PostgreSQL Master/Replica + Redis
-├── nginx.conf                  <-- ค่าคอนฟิก Nginx Load Balancer
-├── test-demo.js                <-- สคริปต์ทดสอบระบบอัตโนมัติ
-├── loadtest.js                 <-- k6 Load Test Script
-├── .env                        <-- การตั้งค่าตัวแปรระบบ
+│   └── main.ts                 <-- Bull-Board ที่ /admin/queues
+├── db/init.sql                 <-- schema + seed (Postgres โหลดตอน init)
+├── docker-compose.yml           <-- Nginx + NestJS × 3 + PostgreSQL ตัวเดียว + Redis
+├── nginx.conf                  <-- least_conn
+├── loadtest/                   <-- k6 + demo scripts
 └── package.json
 ```
 
@@ -81,10 +82,13 @@ cd FlashSaleBackend
 
 ```bash
 # สั่ง Build และรันบริการทั้งหมด (Nginx + 3 APIs + Postgres + Redis)
-docker-compose up -d --build
+docker compose up -d --build
 
 # เช็คสถานะ Containers
 docker ps
+
+# ล้าง volume เพื่อให้ Postgres โหลด db/init.sql ใหม่
+# docker compose down -v
 ```
 
 ---
@@ -95,8 +99,8 @@ docker ps
 # 1. ติดตั้ง Dependencies
 npm install
 
-# 2. เปิดเฉพาะ Postgres DB และ Redis ใน Docker
-docker-compose up -d db-primary redis
+# 2. เปิดเฉพาะ Postgres และ Redis ใน Docker
+docker compose up -d postgres redis
 
 # 3. รัน NestJS ในโหมด Watch (Port 3000)
 npm run start:dev
@@ -112,7 +116,7 @@ Prefix หลักของทุก API คือ **`/api/v1`**
 * **Endpoint:** `POST /api/v1/auth/token`
 * **PowerShell Command:**
   ```powershell
-  $token = (Invoke-RestMethod -Uri "http://localhost/api/v1/auth/token" -Method Post -ContentType "application/json" -Body '{"userId": "user-001"}').accessToken
+  $token = (Invoke-RestMethod -Uri "http://localhost:8080/api/v1/auth/token" -Method Post -ContentType "application/json" -Body '{"userId": "user-001"}').accessToken
   Write-Host "🔑 ได้รับ Token เรียบร้อยแล้ว:" $token
   ```
 * **Response (200 OK):**
@@ -129,7 +133,7 @@ Prefix หลักของทุก API คือ **`/api/v1`**
 * **Endpoint:** `GET /api/v1/products?page=1&limit=10`
 * **PowerShell Command:**
   ```powershell
-  Invoke-RestMethod -Uri "http://localhost/api/v1/products?page=1&limit=5" -Method Get | ConvertTo-Json -Depth 3
+  Invoke-RestMethod -Uri "http://localhost:8080/api/v1/products?page=1&limit=5" -Method Get | ConvertTo-Json -Depth 3
   ```
 * **Response (200 OK):**
   ```json
@@ -161,7 +165,7 @@ Prefix หลักของทุก API คือ **`/api/v1`**
 * **Headers:** `Authorization: Bearer <accessToken>`
 * **PowerShell Command:**
   ```powershell
-  Invoke-RestMethod -Uri "http://localhost/api/v1/orders" -Method Post -Headers @{ "Authorization" = "Bearer $token" } -ContentType "application/json" -Body '{"productId": "p-1001"}' | ConvertTo-Json
+  Invoke-RestMethod -Uri "http://localhost:8080/api/v1/orders" -Method Post -Headers @{ "Authorization" = "Bearer $token" } -ContentType "application/json" -Body '{"productId": "p-1001"}' | ConvertTo-Json
   ```
 * **Response (202 Accepted):**
   ```json
@@ -172,7 +176,7 @@ Prefix หลักของทุก API คือ **`/api/v1`**
   }
   ```
 
-*(หมายเหตุ: หากรันแบบ Local Dev Mode สามารถเปลี่ยน URL จาก `http://localhost/api/v1/...` เป็น `http://localhost:3000/api/v1/...`)*
+*(หมายเหตุ: ผ่าน Nginx ใช้พอร์ต **8080** · รัน NestJS ตรง ๆ ใช้ `http://localhost:3000/api/v1/...` · `orderJobId` เป็น `job-{userId}_{productId}` เพราะ BullMQ ห้าม `:` ใน jobId)*
 
 ---
 
@@ -182,7 +186,7 @@ Prefix หลักของทุก API คือ **`/api/v1`**
 รันเพื่อทดสอบการขอ Token, ดึงสินค้า, สั่งซื้อสินค้า, ป้องกันการสั่งซื้อซ้ำ และเช็คการตัดสต็อก:
 
 ```bash
-node test-demo.js
+node loadtest/test-demo.js
 ```
 
 ---
@@ -191,7 +195,7 @@ node test-demo.js
 ทดสอบยิง 500 Concurrent Users แย่งกันกดสั่งซื้อสินค้า `p-1001`:
 
 ```bash
-k6 run loadtest.js
+k6 run loadtest/loadtest.js
 ```
 
 ---
@@ -200,4 +204,4 @@ k6 run loadtest.js
 
 สามารถเปิดดูสถานะการทำงานของคิว (Jobs in Queue, Active, Completed, Failed) ได้ผ่านหน้าเว็บ Dashboard:
 
-👉 **[http://localhost/admin/queues](http://localhost/admin/queues)** (หรือ `http://localhost:3000/admin/queues`)
+👉 **[http://localhost:8080/admin/queues](http://localhost:8080/admin/queues)** (หรือ `http://localhost:3000/admin/queues`)

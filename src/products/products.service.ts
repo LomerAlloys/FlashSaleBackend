@@ -72,18 +72,48 @@ export class ProductsService {
   }
 
   // 🔎 อ่านอย่างเดียว (ไม่เขียน DB) เช็คว่ามี productId นี้จริงไหม ใช้ก่อน enqueue order
+  // แคชแค่ "มี/ไม่มีสินค้า" — ห้ามแคช remainingStock ที่นี่
   async exists(productId: string): Promise<boolean> {
+    const cacheKey = `product:exists:${productId}`;
+
+    try {
+      const cached = await this.redis.get(cacheKey);
+      if (cached === '1') return true;
+      if (cached === '0') return false;
+    } catch (err) {
+      this.logger.error(`Redis exists-cache read error: ${err.message}`);
+    }
+
     const count = await this.productRepository.count({ where: { productId } });
-    return count > 0;
+    const exists = count > 0;
+
+    try {
+      await this.redis.set(cacheKey, exists ? '1' : '0', 'EX', 300);
+    } catch (err) {
+      this.logger.error(`Redis exists-cache write error: ${err.message}`);
+    }
+
+    return exists;
   }
 
-  // 🧹 Cache Invalidation Method: ลบแคชรายการสินค้าทั้งหมดเมื่อมีการตัดสต็อก
+  // 🧹 Cache Invalidation: ลบเฉพาะหน้าสินค้าหลังตัดสต็อก (SCAN ไม่บล็อก Redis เหมือน KEYS)
   async invalidateProductCache() {
+    const pattern = 'products:page:*';
+    let cursor = '0';
+    let deleted = 0;
+
     try {
-      const keys = await this.redis.keys('products:*');
-      if (keys.length > 0) {
-        await this.redis.del(...keys);
-        this.logger.log(`🗑️ Invalidated ${keys.length} product cache keys`);
+      do {
+        const [nextCursor, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+        cursor = nextCursor;
+        if (keys.length > 0) {
+          await this.redis.del(...keys);
+          deleted += keys.length;
+        }
+      } while (cursor !== '0');
+
+      if (deleted > 0) {
+        this.logger.log(`🗑️ Invalidated ${deleted} product cache keys`);
       }
     } catch (err) {
       this.logger.error(`Failed to invalidate cache: ${err.message}`);

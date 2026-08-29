@@ -15,7 +15,7 @@ async function runDemo() {
     const authRes = await fetch(`${BASE_URL}/auth/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'user-101' }),
+      body: JSON.stringify({ userId: 'user-105' }),
     });
     const authData = await authRes.json();
     console.log('   ✅ JWT Token received:', authData.accessToken.substring(0, 35) + '...\n');

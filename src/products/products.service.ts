@@ -15,26 +15,22 @@ export class ProductsService {
     private readonly redis: Redis,
   ) {}
 
-  // ⚡ Cache-Aside Pattern Implementation (Section 2.2 in Spec PDF)
+  // ⚡ Cache-Aside Pattern Implementation
   async findAll(page: number = 1, limit: number = 10) {
     const cacheKey = `products:page:${page}:limit:${limit}`;
 
     try {
       const cached = await this.redis.get(cacheKey);
       if (cached) {
-        this.logger.log(`⚡ Cache HIT for ${cacheKey}`);
-        await this.redis.incr('cache:stats:hit').catch((err) => this.logger.error(`Redis incr error: ${err.message}`));
+        await this.redis.incr('cache:stats:hit').catch(() => {});
         return JSON.parse(cached);
       }
     } catch (err) {
       this.logger.error(`Redis read error: ${err.message}`);
     }
 
-    // Cache Miss -> Query Database
-    this.logger.log(`💾 Cache MISS for ${cacheKey} -> Querying PostgreSQL`);
-    await this.redis.incr('cache:stats:miss').catch((err) => this.logger.error(`Redis incr error: ${err.message}`));
+    await this.redis.incr('cache:stats:miss').catch(() => {});
     const skip = (page - 1) * limit;
-
     const [products, total] = await this.productRepository.findAndCount({
       order: { productId: 'ASC' },
       skip,
@@ -42,7 +38,6 @@ export class ProductsService {
     });
 
     const totalPages = Math.ceil(total / limit);
-
     const result = {
       status: 'success',
       data: products.map((p) => ({
@@ -61,7 +56,6 @@ export class ProductsService {
       },
     };
 
-    // Populate Redis Cache (TTL 30 seconds)
     try {
       await this.redis.set(cacheKey, JSON.stringify(result), 'EX', 30);
     } catch (err) {
@@ -71,52 +65,49 @@ export class ProductsService {
     return result;
   }
 
-  // 🔎 อ่านอย่างเดียว (ไม่เขียน DB) เช็คว่ามี productId นี้จริงไหม ใช้ก่อน enqueue order
-  // แคชแค่ "มี/ไม่มีสินค้า" — ห้ามแคช remainingStock ที่นี่
   async exists(productId: string): Promise<boolean> {
     const cacheKey = `product:exists:${productId}`;
-
     try {
       const cached = await this.redis.get(cacheKey);
       if (cached === '1') return true;
       if (cached === '0') return false;
-    } catch (err) {
-      this.logger.error(`Redis exists-cache read error: ${err.message}`);
-    }
+    } catch (err) {}
 
     const count = await this.productRepository.count({ where: { productId } });
     const exists = count > 0;
-
     try {
-      await this.redis.set(cacheKey, exists ? '1' : '0', 'EX', 300);
-    } catch (err) {
-      this.logger.error(`Redis exists-cache write error: ${err.message}`);
-    }
+      await this.redis.set(cacheKey, exists ? '1' : '0', 'EX', 600);
+    } catch (err) {}
 
     return exists;
   }
 
-  // 🧹 Cache Invalidation: ลบเฉพาะหน้าสินค้าหลังตัดสต็อก (SCAN ไม่บล็อก Redis เหมือน KEYS)
   async invalidateProductCache() {
     const pattern = 'products:page:*';
     let cursor = '0';
-    let deleted = 0;
-
     try {
       do {
         const [nextCursor, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
         cursor = nextCursor;
         if (keys.length > 0) {
           await this.redis.del(...keys);
-          deleted += keys.length;
         }
       } while (cursor !== '0');
-
-      if (deleted > 0) {
-        this.logger.log(`🗑️ Invalidated ${deleted} product cache keys`);
-      }
     } catch (err) {
       this.logger.error(`Failed to invalidate cache: ${err.message}`);
+    }
+  }
+
+  // 📊 Cache Hit/Miss Stats
+  async getCacheStats() {
+    try {
+      const hits = parseInt((await this.redis.get('cache:stats:hit')) || '0', 10);
+      const misses = parseInt((await this.redis.get('cache:stats:miss')) || '0', 10);
+      const total = hits + misses;
+      const hitRate = total > 0 ? ((hits / total) * 100).toFixed(2) + '%' : '0%';
+      return { status: 'success', hits, misses, total, hitRate };
+    } catch {
+      return { status: 'success', hits: 0, misses: 0, total: 0, hitRate: '0%' };
     }
   }
 }

@@ -3,6 +3,11 @@ import { config } from 'dotenv';
 
 config(); // โหลดค่าจาก .env
 
+// รองรับทั้ง 2 ทาง: รันผ่าน ts-node (dev, ตรงจาก src/*.ts)
+// และรันจาก JS ที่ build แล้ว (production/migrate container, ต้องชี้ dist/*.js เท่านั้น
+// เพราะ plain node parse TypeScript import syntax ไม่ได้)
+const isCompiled = __filename.endsWith('.js');
+
 export const AppDataSource = new DataSource({
   type: 'postgres',
   host: process.env.DB_HOST,
@@ -10,7 +15,7 @@ export const AppDataSource = new DataSource({
   username: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: ['src/**/*.entity{.ts,.js}'], // ให้ค้นหาไฟล์ entity อัตโนมัติ
-  migrations: ['src/migrations/*{.ts,.js}'], // กำหนดโฟลเดอร์เก็บไฟล์ migration
+  entities: [isCompiled ? 'dist/**/*.entity.js' : 'src/**/*.entity.ts'],
+  migrations: [isCompiled ? 'dist/migrations/*.js' : 'src/migrations/*.ts'],
   synchronize: false,
 });

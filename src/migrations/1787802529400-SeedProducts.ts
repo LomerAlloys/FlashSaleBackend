@@ -39,7 +39,8 @@ export class SeedProducts1787802529400 implements MigrationInterface {
         for (const p of SEED_PRODUCTS) {
             await queryRunner.query(
                 `INSERT INTO "products" ("productId", "name", "description", "price", "availableStock", "remainingStock", "isFlashSaleActive")
-                 VALUES ($1, $2, $3, $4, $5, $5, $6)`,
+                 VALUES ($1, $2, $3, $4, $5, $5, $6)
+                 ON CONFLICT ("productId") DO NOTHING`,
                 [p.productId, p.name, p.description, p.price, p.availableStock, p.isFlashSaleActive],
             );
         }

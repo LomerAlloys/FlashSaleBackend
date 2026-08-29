@@ -2,6 +2,8 @@ services:
   # 📌 1. PostgreSQL (single instance, no replication)
   postgres:
     image: bitnami/postgresql:latest
+    volumes:
+      - postgres-data:/bitnami/postgresql
     environment:
       - POSTGRESQL_USERNAME=myuser
       - POSTGRESQL_PASSWORD=mypassword
@@ -31,7 +33,8 @@ services:
 
   # 📌 3. One-off migration runner — ทำให้ `docker compose up` เป็น 1-click start จริง
   #    (ไม่ต้องรัน `npm run migration:run` แยกเองอีกต่อไป; ไม่พึ่ง init.sql auto-init
-  #    ที่พิสูจน์แล้วว่าไม่เสถียร — ใช้ TypeORM migration ที่เทสผ่านจริงเป็นหลักเสมอ)
+  #    ที่พิสูจน์แล้วว่าไม่เสถียร — ใช้ TypeORM migration ที่เทสผ่านจริงเป็นหลักเสมอ
+  #    migration ถูกเขียนให้ idempotent (hasTable/ON CONFLICT) อยู่แล้ว ปลอดภัยแม้รันซ้ำ)
   migrate:
     build:
       context: .
@@ -151,3 +154,4 @@ services:
 
 volumes:
   redis-data:
+  postgres-data:

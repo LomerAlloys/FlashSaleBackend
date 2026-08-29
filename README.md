@@ -87,25 +87,25 @@ git clone <repository_url>
 cd FlashSaleBackend
 ```
 
-### 🔹 วิธีที่ 1: รันทั้งระบบด้วย Docker Compose (แนะนำ)
+### 🔹 วิธีที่ 1: รันทั้งระบบด้วย Docker Compose (1-Click Start)
 
 ```bash
-# 1. สั่ง Build และรันบริการทั้งหมด (Nginx + 3 APIs + Postgres + Redis)
 docker compose up -d --build
-
-# 2. เช็คสถานะ Containers (ทุกตัวต้องขึ้น Up)
-docker compose ps
 ```
 
-> ⚠️ **สำคัญมาก — ต้องรัน migration ทุกครั้งที่เพิ่งสร้าง volume ใหม่ (`docker compose down -v` ตามด้วย `up`)**
-> เพราะ `synchronize: false` เสมอ (ตามกฎของโปรเจกต์) จะไม่มีใครสร้างตาราง `products`/`orders` ให้อัตโนมัติ ถ้าไม่รัน migration จะเจอ error แบบ `relation "products" does not exist`
->
-> ```bash
-> npm install               # ครั้งแรกครั้งเดียว หรือเมื่อมี dependency ใหม่
-> npm run migration:run     # รันทุกครั้งหลัง volume ใหม่ — สร้าง schema + seed สินค้า 20 รายการ
-> ```
->
-> (มีไฟล์ `db/init.sql` / root `init.sql` ที่ Postgres จะ auto-run เองได้ตอน volume ว่างสนิทเช่นกัน แต่ **ไม่เสถียร** — เจอเคสที่รันแล้วไม่มีข้อมูลเข้ามา จึงยึด `npm run migration:run` เป็นวิธีหลักที่ต้องรันเองเสมอ อย่าพึ่ง auto-init เพียงอย่างเดียว)
+**คำสั่งเดียวจบ** — ไม่ต้องรัน migration แยกเองอีกแล้ว ระบบจะไล่ทำตามลำดับนี้ให้อัตโนมัติทั้งหมดผ่าน Docker Compose healthcheck + `depends_on`:
+
+1. `postgres` / `redis` บูตขึ้นจนพร้อมรับ connection จริง (`healthcheck`)
+2. service `migrate` (one-off) รัน TypeORM migration สร้าง schema + seed สินค้า 20 รายการ ให้จบก่อน
+3. `api1`/`api2`/`api3` ถึงจะเริ่มบูต แล้วรอจน `/api/v1/health` ตอบ 200 จริง (healthcheck) ก่อนนับว่าพร้อม
+4. `nginx` ถึงจะเริ่มทำงานหลังจาก api ทั้ง 3 ตัว healthy ครบ
+
+เช็คสถานะ:
+```bash
+docker compose ps   # ทุกตัวต้องขึ้น Up (healthy) ยกเว้น migrate ที่ควรเป็น Exited (0) = สำเร็จ
+```
+
+> ℹ️ เดิมเคยลองให้ Postgres auto-run schema เองผ่าน `docker-entrypoint-initdb.d` (`init.sql`) แต่พบว่า**ไม่เสถียร** (บางรอบไม่มีข้อมูลเข้ามา) จึงตัดออกแล้วยึด TypeORM migration (`src/migrations/`) เป็นแหล่งเดียวเท่านั้น ตามกฎ "schema มาจากทางเดียว"
 
 ---
 
@@ -118,7 +118,7 @@ npm install
 # 2. เปิดเฉพาะ Postgres DB และ Redis ใน Docker
 docker compose up -d postgres redis
 
-# 3. รัน migration (จำเป็นเสมอ — ดูคำอธิบายด้านบน)
+# 3. รัน migration (โหมดนี้รันนอก Docker เลยต้องสั่งเอง ไม่มี migrate service ช่วย)
 npm run migration:run
 
 # 4. รัน NestJS ในโหมด Watch (Port 3000)

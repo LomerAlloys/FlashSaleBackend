@@ -71,6 +71,35 @@ export class ProductsService {
     return result;
   }
 
+  // 📊 Cache Hit/Miss Ratio — สำหรับ Dashboard/Report (Cache Performance)
+  async getCacheStats() {
+    let hit = 0;
+    let miss = 0;
+    try {
+      const [hitVal, missVal] = await Promise.all([
+        this.redis.get('cache:stats:hit'),
+        this.redis.get('cache:stats:miss'),
+      ]);
+      hit = parseInt(hitVal || '0', 10);
+      miss = parseInt(missVal || '0', 10);
+    } catch (err) {
+      this.logger.error(`Redis cache-stats read error: ${err.message}`);
+    }
+
+    const total = hit + miss;
+    const hitRatio = total > 0 ? Number((hit / total).toFixed(4)) : 0;
+
+    return {
+      status: 'success',
+      cache: {
+        hit,
+        miss,
+        total,
+        hitRatio,
+      },
+    };
+  }
+
   // 🔎 อ่านอย่างเดียว (ไม่เขียน DB) เช็คว่ามี productId นี้จริงไหม ใช้ก่อน enqueue order
   // แคชแค่ "มี/ไม่มีสินค้า" — ห้ามแคช remainingStock ที่นี่
   async exists(productId: string): Promise<boolean> {

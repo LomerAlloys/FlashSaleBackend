@@ -1,26 +1,27 @@
-import { Processor, Process, OnQueueActive, OnQueueCompleted, OnQueueFailed } from '@nestjs/bull';
-import type { Job } from 'bull';
+import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
+import { UnrecoverableError, type Job } from 'bullmq';
 import { Logger } from '@nestjs/common';
-import { DataSource } from 'typeorm';
-import { Product } from '../products/entities/product.entity';
-import { Order } from './entities/order.entity';
+import { DataSource, QueryFailedError } from 'typeorm';
+import { Product } from '../entities/product.entity';
+import { Order } from '../entities/order.entity';
 import { ProductsService } from '../products/products.service';
 
-@Processor('orders')
-export class OrdersProcessor {
-  private readonly logger = new Logger(OrdersProcessor.name);
+@Processor('order-queue')
+export class OrderProcessor extends WorkerHost {
+  private readonly logger = new Logger(OrderProcessor.name);
 
   constructor(
     private readonly dataSource: DataSource,
     private readonly productsService: ProductsService,
-  ) {}
+  ) {
+    super();
+  }
 
-  @Process('process-order')
-  async handleOrder(job: Job) {
+  async process(job: Job): Promise<any> {
     const { userId, productId } = job.data;
     this.logger.log(`⚙️ [Processing Order Job ${job.id}] User: ${userId}, Product: ${productId}`);
 
-    return await this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       // 🔒 Concurrency Handling (Worker/Database Level - Slide 3 in Spec PDF)
       // 1. อ่านข้อมูลสินค้าพร้อมใส่ Pessimistic Write Lock เพื่อป้องกัน Race Condition สต็อกติดลบ
       const product = await manager.findOne(Product, {
@@ -30,17 +31,17 @@ export class OrdersProcessor {
 
       if (!product) {
         this.logger.error(`❌ Product ${productId} not found!`);
-        throw new Error(`PRODUCT_NOT_FOUND: ${productId}`);
+        throw new UnrecoverableError(`PRODUCT_NOT_FOUND: ${productId}`);
       }
 
       if (!product.isFlashSaleActive) {
         this.logger.warn(`⚠️ Flash sale is not active for product ${productId}`);
-        throw new Error(`FLASH_SALE_INACTIVE: ${productId}`);
+        throw new UnrecoverableError(`FLASH_SALE_INACTIVE: ${productId}`);
       }
 
       if (product.remainingStock <= 0) {
         this.logger.warn(`⚠️ Stock empty for product ${productId}! Remaining: ${product.remainingStock}`);
-        throw new Error(`OUT_OF_STOCK: Product ${productId} is sold out!`);
+        throw new UnrecoverableError(`OUT_OF_STOCK: Product ${productId} is sold out!`);
       }
 
       // 2. ตรวจสอบในตาราง Orders ป้องกันซื้อซ้ำในฝั่ง DB
@@ -50,25 +51,33 @@ export class OrdersProcessor {
 
       if (existingOrder) {
         this.logger.warn(`⚠️ Duplicate order detected in DB for user ${userId} on product ${productId}`);
-        throw new Error(`DUPLICATE_ORDER: User ${userId} already purchased ${productId}`);
+        throw new UnrecoverableError(`DUPLICATE_ORDER: User ${userId} already purchased ${productId}`);
       }
 
       // 3. ตัดสต็อกสินค้าใน DB (การันตีไม่ติดลบ)
-      product.remainingStock -= 1;
-      await manager.save(product);
-
       // 4. บันทึกคำสั่งซื้อ
+      product.remainingStock -= 1;
       const order = manager.create(Order, {
         userId,
         productId,
         status: 'completed',
       });
-      await manager.save(order);
+      try {
+        await manager.save(product);
+        await manager.save(order);
+      } catch (err) {
+        // UNIQUE(userId, productId) หรือ CHECK(remainingStock >= 0) — retry ไม่ช่วย
+        if (err instanceof QueryFailedError) {
+          const code = (err as QueryFailedError & { driverError?: { code?: string } }).driverError
+            ?.code;
+          if (code === '23505' || code === '23514') {
+            throw new UnrecoverableError(err.message);
+          }
+        }
+        throw err;
+      }
 
       this.logger.log(`✅ [Order Completed] User ${userId} successfully ordered ${productId}! Stock left: ${product.remainingStock}`);
-
-      // 🧹 5. Cache Invalidation: ลบแคชรายการสินค้า เพื่อให้ API GET /products แสดงสต็อกล่าสุด
-      await this.productsService.invalidateProductCache();
 
       return {
         success: true,
@@ -76,20 +85,25 @@ export class OrdersProcessor {
         remainingStock: product.remainingStock,
       };
     });
+
+    // 🧹 Cache Invalidation: ทำหลังจาก transaction commit สำเร็จแล้วเท่านั้น
+    await this.productsService.invalidateProductCache();
+
+    return result;
   }
 
-  @OnQueueActive()
+  @OnWorkerEvent('active')
   onActive(job: Job) {
     this.logger.log(`🟡 [Order Job Active] Job ${job.id} started processing.`);
   }
 
-  @OnQueueCompleted()
-  onCompleted(job: Job, result: any) {
+  @OnWorkerEvent('completed')
+  onCompleted(job: Job) {
     this.logger.log(`🟢 [Order Job Completed] Job ${job.id} finished successfully!`);
   }
 
-  @OnQueueFailed()
-  onFailed(job: Job, error: Error) {
-    this.logger.error(`🔴 [Order Job Failed] Job ${job.id} failed: ${error.message}`);
+  @OnWorkerEvent('failed')
+  onFailed(job: Job | undefined, error: Error) {
+    this.logger.error(`🔴 [Order Job Failed] Job ${job?.id}: ${error.message}`);
   }
 }

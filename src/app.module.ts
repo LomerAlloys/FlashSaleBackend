@@ -3,15 +3,15 @@ import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CacheModule } from '@nestjs/cache-manager';
 import { redisStore } from 'cache-manager-redis-yet';
-import { BullModule } from '@nestjs/bull';
-import { Redis } from 'ioredis';
+import { BullModule } from '@nestjs/bullmq';
 import { LoggerModule } from 'nestjs-pino';
 import { randomUUID } from 'crypto';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { Product } from './products/entities/product.entity';
-import { Order } from './orders/entities/order.entity';
+import { Product } from './entities/product.entity';
+import { Order } from './entities/order.entity';
+import { redisClientProvider } from './common/redis/redis.provider';
 
 import { AuthModule } from './auth/auth.module';
 import { ProductsModule } from './products/products.module';
@@ -35,13 +35,13 @@ import { OrdersModule } from './orders/orders.module';
     // 🗄️ PostgreSQL Database Connection (ใช้ชื่อ flash_sale_db)
     TypeOrmModule.forRoot({
       type: 'postgres',
-      host: process.env.DB_HOST || process.env.DB_MASTER_HOST || 'localhost',
+      host: process.env.DB_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT || '5432', 10),
       username: String(process.env.DB_USER || 'myuser'),
       password: String(process.env.DB_PASSWORD || 'mypassword'),
       database: String(process.env.DB_NAME || 'flash_sale_db'),
       entities: [Product, Order],
-      synchronize: true, // 🔄 ล้างและสร้าง Schema ใหม่ให้อัตโนมัติตาม Entity
+      synchronize: false, // ❗ schema มาจาก migration เท่านั้น (npm run migration:run)
       extra: {
         max: 15,
       },
@@ -63,7 +63,7 @@ import { OrdersModule } from './orders/orders.module';
 
     // 📨 BullMQ Configuration
     BullModule.forRoot({
-      redis: {
+      connection: {
         host: process.env.REDIS_HOST || 'localhost',
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
       },
@@ -74,18 +74,7 @@ import { OrdersModule } from './orders/orders.module';
     OrdersModule,
   ],
   controllers: [AppController],
-  providers: [
-    AppService,
-    {
-      provide: 'REDIS_CLIENT',
-      useFactory: () => {
-        return new Redis({
-          host: process.env.REDIS_HOST || 'localhost',
-          port: parseInt(process.env.REDIS_PORT || '6379', 10),
-        });
-      },
-    },
-  ],
-  exports: ['REDIS_CLIENT', BullModule], 
+  providers: [AppService, redisClientProvider],
+  exports: ['REDIS_CLIENT', BullModule],
 })
 export class AppModule {}

@@ -1,6 +1,6 @@
 import { Controller, Post, Body, UseGuards, Request, HttpCode, HttpStatus } from '@nestjs/common';
 import { OrdersService } from './orders.service';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 @Controller('orders')
 export class OrdersController {
@@ -10,7 +10,7 @@ export class OrdersController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.ACCEPTED) // 202 Accepted
   createOrder(@Request() req: any, @Body() body: { productId: string }) {
-    const userId = req.user.userId;
+    const userId = req.user.sub;
     return this.ordersService.createOrder(userId, body.productId);
   }
 }

@@ -2,8 +2,8 @@ services:
   # 📌 1. PostgreSQL (single instance, no replication)
   postgres:
     image: bitnami/postgresql:latest
-    volumes:
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # volumes:
+    #   - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     environment:
       - POSTGRESQL_USERNAME=myuser
       - POSTGRESQL_PASSWORD=mypassword

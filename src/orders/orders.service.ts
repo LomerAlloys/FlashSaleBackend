@@ -34,7 +34,7 @@ export class OrdersService {
       throw new NotFoundException(`Product ${productId} not found`);
     }
 
-    // 3. เพิ่ม Job เข้า BullMQ แบบ Asynchronous
+    // 3. เพิ่ม Job เข้า BullMQ แบบ Asynchronous (เก็บประวัติ 500 jobs ล่าสุดสำหรับ Bull-Board)
     try {
       const job = await this.ordersQueue.add(
         'process-order',
@@ -43,8 +43,8 @@ export class OrdersService {
           jobId: `${userId}_${productId}`,
           attempts: 3,
           backoff: { type: 'exponential', delay: 200 },
-          removeOnComplete: true,
-          removeOnFail: 100,
+          removeOnComplete: 500, // 👈 เก็บประวัติ Completed Jobs ล่าสุด 500 รายการ
+          removeOnFail: 500,     // 👈 เก็บประวัติ Failed (Out of stock) ล่าสุด 500 รายการ
         },
       );
 

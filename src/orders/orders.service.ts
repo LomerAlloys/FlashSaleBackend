@@ -17,15 +17,15 @@ export class OrdersService {
       throw new BadRequestException('productId is required');
     }
 
-    // 1. Atomic SETNX Concurrency Lock (< 0.1ms) - ป้องกันยิงซ้ำทันที
+    // 1. Atomic SETNX Concurrency Lock (< 0.1ms) - TTL 60s ตาม CONTRACT.md
     const userOrderLockKey = `lock:order:${userId}:${productId}`;
-    const acquired = await this.redis.set(userOrderLockKey, '1', 'EX', 120, 'NX');
+    const acquired = await this.redis.set(userOrderLockKey, '1', 'EX', 60, 'NX');
 
     if (!acquired) {
       throw new ConflictException('You have already submitted an order for this product.');
     }
 
-    // 2. เช็คสินค้าจาก L1 Memory (< 0.01ms)
+    // 2. Fast product existence check from L1 RAM
     const productExists = await this.productsService.exists(productId);
     if (!productExists) {
       await this.redis.del(userOrderLockKey);
@@ -34,18 +34,18 @@ export class OrdersService {
 
     const jobId = `${userId}_${productId}`;
 
-    // 3. Non-Blocking High-Speed Enqueue (ส่งงานเข้า Queue แบบ Asynchronous ทันที)
+    // 3. Non-Blocking High-Speed Enqueue (ส่งเข้า Queue ทันที + เก็บประวัติ 500 jobs สำหรับ Bull-Board)
     this.ordersQueue.add(
       'process-order',
       { userId, productId },
       {
         jobId,
-        attempts: 1,
-        removeOnComplete: true,
-        removeOnFail: true,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 200 },
+        removeOnComplete: 500,
+        removeOnFail: 500,
       },
     ).catch(async (err) => {
-      // กรณี Queue พัง ให้ปลดล็อกสิทธิ์
       await this.redis.del(userOrderLockKey).catch(() => {});
     });
 

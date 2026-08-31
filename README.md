@@ -73,6 +73,8 @@ FlashSaleBackend/
 │   └── init.sql                <-- สำเนา SQL อ้างอิง (ต้นแบบจริงคือ src/migrations/)
 ├── loadtest/
 │   ├── loadtest.js              <-- k6 Load Test Script
+│   ├── warmup-and-reset.sh      <-- รีเซ็ต+วอร์มก่อนยิงแต่ละรอบ (bash ล้วน ไม่พึ่ง Node.js)
+│   ├── reset-state.js           <-- รีเซ็ตอย่างเดียว (ต้องมี npm install ไว้ในเครื่องที่รัน)
 │   ├── test-demo.js             <-- สคริปต์ทดสอบ/chaos suite แบบ interactive
 │   └── verify.js                <-- เช็คผลลัพธ์จริงใน DB (stock/order count)
 ├── docker-compose.yml           <-- Nginx + 4 API Instances + PostgreSQL (เดี่ยว, ไม่มี replica) + Redis
@@ -288,7 +290,7 @@ Prefix หลักของทุก API คือ **`/api/v1`**
 
 ## 🧪 6. สคริปต์ทดสอบระบบ (Testing & Verification)
 
-### 🔹 6.1 รีเซ็ตสถานะระบบก่อนยิงรอบใหม่ (ใช้แทน `down -v` — คนละคำสั่งกับการยิงเทสต์)
+### 🔹 6.1 รีเซ็ต + วอร์มระบบก่อนยิงรอบใหม่ (ใช้แทน `down -v` — คนละคำสั่งกับการยิงเทสต์)
 
 ใช้เมื่อไหร่: จะยิง k6 ซ้ำอีกรอบ (ทดสอบเองซ้ำ หรือ **ให้กลุ่มเพื่อนมายิงเซิร์ฟเวอร์เราต่อกันหลายรอบ
 ตามสเปค PDF ข้อ 3**) โดยไม่อยาก restart container ทั้งชุด
@@ -301,15 +303,40 @@ Prefix หลักของทุก API คือ **`/api/v1`**
 **ทำไมไม่ใช้ `docker compose down -v` แทน:** ใช้ได้ผลเหมือนกัน แต่ container ต้อง restart ทั้งชุด
 ทำให้เจอ cold start ซ้ำทุกครั้ง (ดูข้อ 4) ต้องเสียเวลาวอร์มใหม่ทุกรอบที่เปลี่ยนกลุ่มผู้ยิง ซึ่งไม่จำเป็นเลย
 
-**คำสั่งรีเซ็ต (รันได้ในเสี้ยววินาที ไม่ restart container ใดๆ เลย):**
+#### วิธีที่ 1 (แนะนำ): `warmup-and-reset.sh` — รีเซ็ต + วอร์ม ในคำสั่งเดียว ไม่พึ่ง Node.js เลย
+
+ใช้ `docker exec` + `curl` ล้วนๆ ไม่ต้องมี `node_modules` ติดตั้งอยู่ (สำคัญ: บนเซิร์ฟเวอร์จริงที่รัน
+แค่ผ่าน Docker เฉยๆ มักไม่มี `npm install` รันไว้ที่ host เลย — สคริปต์ Node จะ `MODULE_NOT_FOUND` ทันที
+ตัวนี้เลยพกไปรันที่ไหนก็ได้ที่มี `docker`/`bash`/`curl`):
+
+```bash
+bash loadtest/warmup-and-reset.sh
+# หรือถ้า clone repo ไว้: npm run loadtest:warmup
+```
+
+ทำ 3 ขั้นในคำสั่งเดียว: (1) รีเซ็ต stock ทุกสินค้ากลับเต็ม + ลบ `orders` ทั้งหมด + `redis-cli FLUSHALL`
+(2) วอร์มระบบด้วย `p-1002` (ไม่แตะสต็อก `p-1001` ที่โจทย์เช็คจริง) (3) ปริ๊นท์สต็อก `p-1001` ให้เช็คว่า
+กลับมาเต็มจริง — จบแล้วยิง k6 ได้ทันที ไม่ต้องทำอย่างอื่นเพิ่ม
+
+ปรับ target ได้ผ่าน env var ถ้า container ชื่อไม่ตรง default หรือรันจากเครื่องอื่น:
+```bash
+BASE_URL=http://<SERVER_IP>:8080/api/v1 POSTGRES_CONTAINER=flashsalebackend-postgres-1 \
+REDIS_CONTAINER=flashsalebackend-redis-1 bash loadtest/warmup-and-reset.sh
+```
+
+> 💡 เก็บสำเนาไฟล์นี้ไว้ในเครื่องเซิร์ฟเวอร์แยกก็ได้ (เช่น `~/tester/warmup-and-reset.sh`) เผื่อบางที
+> ไม่ได้ `git pull` repo ล่าสุดไว้ — เนื้อหาไม่ได้อ้างอิงอะไรจาก repo เลยนอกจากชื่อ container
+
+#### วิธีที่ 2: `reset-state.js` — รีเซ็ตอย่างเดียว (ต้องมี `npm install` ไว้ในเครื่องที่รัน)
+
+ถ้ารันจากเครื่อง dev ที่ `npm install` ไว้แล้ว (มี `pg`/`ioredis` ใน `node_modules`) ใช้ตัวนี้แทนได้:
 ```bash
 npm run loadtest:reset
 ```
-ทำ 3 อย่าง: (1) `UPDATE products SET "remainingStock" = "availableStock"` ทุกสินค้ากลับเต็ม
-(2) ลบ `orders` ทั้งหมด (3) `redis-cli FLUSHALL` ล้าง lock/cache/queue history ที่ค้างอยู่
+ทำแค่รีเซ็ต DB + Redis (ไม่วอร์ม) — ถ้าใช้ตัวนี้ต้องวอร์มเองแยกตามสคริปต์ในข้อ 4 ด้วย
 
-รันคำสั่งนี้ **ก่อนเริ่มแต่ละรอบ/แต่ละกลุ่มที่จะยิง** แล้วค่อยไปยิง k6 ตามข้อ 6.2 ด้านล่างได้เลย
-(ไม่ต้องวอร์มใหม่ — container ไม่ได้ restart ระบบยัง "อุ่น" อยู่เหมือนเดิม)
+รันตัวใดตัวหนึ่งข้างบน **ก่อนเริ่มแต่ละรอบ/แต่ละกลุ่มที่จะยิง** แล้วค่อยไปยิง k6 ตามข้อ 6.3 ด้านล่าง
+(ไม่ต้อง restart container เลย — ระบบยัง "อุ่น" อยู่เหมือนเดิม)
 
 ---
 
@@ -326,7 +353,7 @@ node loadtest/test-demo.js
 เตรียม JWT 500 users → GET 1,000 concurrent → POST 500 concurrent แย่งกันกดสั่งซื้อสินค้า `p-1001`:
 
 > ⚠️ **ครั้งแรกที่บูตระบบ:** วอร์มก่อน (ดูข้อ 4) ไม่งั้น write p95 รอบแรกจะขึ้นสูงผิดปกติ
-> **รอบถัดๆ ไป (ยิงซ้ำ/เปลี่ยนกลุ่มผู้ยิง):** แค่ `npm run loadtest:reset` (ข้อ 6.1) ก่อนยิง ไม่ต้องวอร์มใหม่
+> **รอบถัดๆ ไป (ยิงซ้ำ/เปลี่ยนกลุ่มผู้ยิง):** แค่รัน `bash loadtest/warmup-and-reset.sh` (ข้อ 6.1) ก่อนยิง — ทำรีเซ็ต+วอร์มให้ในตัวแล้ว
 
 **ถ้ามี k6 ติดตั้งในเครื่องแล้ว (รันชี้เข้า localhost):**
 ```bash

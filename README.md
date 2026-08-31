@@ -14,34 +14,39 @@
                                              │ (Port 8080)
                                              ▼
                                ┌───────────────────────────┐
-                               │    Nginx Load Balancer    │ (Round-Robin)
+                               │    Nginx Load Balancer    │ (Least Connections + RAM Microcache)
                                └─────────────┬─────────────┘
                                              │
-                  ┌──────────────────────────┼──────────────────────────┐
-                  ▼                          ▼                          ▼
-       ┌────────────────────┐     ┌────────────────────┐     ┌────────────────────┐
-       │   api1 (NestJS)    │     │   api2 (NestJS)    │     │   api3 (NestJS)    │
-       │    (Instance 1)    │     │    (Instance 2)    │     │    (Instance 3)    │
-       └──────────┬─────────┘     └──────────┬─────────┘     └──────────┬─────────┘
-                  │                          │                          │
-                  ├──────────────────────────┼──────────────────────────┤
-                  │ (Redis Caching & Lock)   │ (BullMQ Order Queue)     │ (Pessimistic Lock)
-                  ▼                          ▼                          ▼
-       ┌────────────────────┐     ┌────────────────────┐     ┌────────────────────┐
-       │    Redis Cache     │     │   BullMQ Queue     │     │  PostgreSQL DB     │
-       │   (Cache-Aside)    │     │  (Order Worker)    │     │  (Single Instance) │
-       └────────────────────┘     └────────────────────┘     └────────────────────┘
-                                             │
-                                             ▼
-                               ┌───────────────────────────┐
-                               │   Bull-Board Dashboard    │ (http://localhost:8080/admin/queues)
-                               └───────────────────────────┘
+         ┌───────────────┬──────────────────┼──────────────────┬───────────────┐
+         ▼               ▼                  ▼                  ▼               │
+  ┌────────────┐  ┌────────────┐     ┌────────────┐     ┌────────────┐         │
+  │    api1    │  │    api2    │     │    api3    │     │    api4    │         │
+  │  (NestJS)  │  │  (NestJS)  │     │  (NestJS)  │     │  (NestJS)  │         │
+  └──────┬─────┘  └──────┬─────┘     └──────┬─────┘     └──────┬─────┘         │
+         │               │                  │                  │               │
+         └───────────────┴─────────┬────────┴──────────────────┘               │
+                                    │ (Redis Caching & Lock, BullMQ enqueue)     │
+                                    ▼                                           │
+                       ┌────────────────────┐                                  │
+                       │    Redis Cache     │                                  │
+                       │  (Cache-Aside +    │                                  │
+                       │  Lock + Queue)     │                                  │
+                       └──────────┬─────────┘                                  │
+                                  │ (BullMQ Worker — เดินอยู่ในทุก api instance)   │
+                                  ▼                                            │
+                       ┌────────────────────┐                                  │
+                       │  PostgreSQL DB     │◄─────────────────────────────────┘
+                       │  (Single Instance, │      (health check ทุก instance)
+                       │  Pessimistic Lock) │
+                       └────────────────────┘
+
+               Bull-Board Dashboard: http://localhost:8080/admin/queues
 ```
 
 > **หมายเหตุ:** ไม่มี DB Replication (Master/Replica) — ใช้ Postgres instance เดียว เพราะ read replica lag ทำให้ `remainingStock` ที่ตอบกลับไม่ตรงความจริง ซึ่งขัดกับข้อกำหนดเรื่องความถูกต้องของสต็อกโดยตรง
 
 ### 🌟 ฟีเจอร์สำคัญในระบบ:
-1. **Load Balancing (Nginx):** กระจายคำขอไปยัง 3 Backend Instances แบบ Round-Robin
+1. **Load Balancing (Nginx):** กระจายคำขอไปยัง 4 Backend Instances แบบ Least Connections พร้อม RAM Microcache (`/dev/shm`) สำหรับ `GET /products`
 2. **Stateless Authentication (JWT):** ยืนยันตัวตนด้วย JSON Web Token
 3. **Read-Heavy Caching (Redis Cache-Aside):** แคชรายการสินค้า และทำการ **Cache Invalidation** ทันทีเมื่อสต็อกมีการอัปเดต
 4. **API-Level Concurrency Locking (Redis SETNX):** ล็อกสิทธิ์ด้วย Redis Atomic Operation ป้องกันผู้ใช้คนเดิมกดซื้อซ้ำซ้อน
@@ -68,9 +73,11 @@ FlashSaleBackend/
 │   └── init.sql                <-- สำเนา SQL อ้างอิง (ต้นแบบจริงคือ src/migrations/)
 ├── loadtest/
 │   ├── loadtest.js              <-- k6 Load Test Script
+│   ├── warmup-and-reset.sh      <-- รีเซ็ต+วอร์มก่อนยิงแต่ละรอบ (bash ล้วน ไม่พึ่ง Node.js)
+│   ├── reset-state.js           <-- รีเซ็ตอย่างเดียว (ต้องมี npm install ไว้ในเครื่องที่รัน)
 │   ├── test-demo.js             <-- สคริปต์ทดสอบ/chaos suite แบบ interactive
 │   └── verify.js                <-- เช็คผลลัพธ์จริงใน DB (stock/order count)
-├── docker-compose.yml           <-- Nginx + 3 API Instances + PostgreSQL (เดี่ยว, ไม่มี replica) + Redis
+├── docker-compose.yml           <-- Nginx + 4 API Instances + PostgreSQL (เดี่ยว, ไม่มี replica) + Redis
 ├── nginx.conf                  <-- ค่าคอนฟิก Nginx Load Balancer
 ├── .env                        <-- การตั้งค่าตัวแปรระบบ
 └── package.json
@@ -97,8 +104,8 @@ docker compose up -d --build
 
 1. `postgres` / `redis` บูตขึ้นจนพร้อมรับ connection จริง (`healthcheck`)
 2. service `migrate` (one-off) รัน TypeORM migration สร้าง schema + seed สินค้า 20 รายการ ให้จบก่อน
-3. `api1`/`api2`/`api3` ถึงจะเริ่มบูต แล้วรอจน `/api/v1/health` ตอบ 200 จริง (healthcheck) ก่อนนับว่าพร้อม
-4. `nginx` ถึงจะเริ่มทำงานหลังจาก api ทั้ง 3 ตัว healthy ครบ
+3. `api1`-`api4` ถึงจะเริ่มบูต แล้วรอจน `/api/v1/health` ตอบ 200 จริง (healthcheck) ก่อนนับว่าพร้อม
+4. `nginx` ถึงจะเริ่มทำงานหลังจาก api ทั้ง 4 ตัว healthy ครบ
 
 เช็คสถานะ:
 ```bash
@@ -127,7 +134,89 @@ npm run start:dev
 
 ---
 
-## 🔌 4. รายละเอียด API Endpoints & วิธีการทดสอบด้วย PowerShell
+## 🔥 4. Warm-up ก่อนยิง Load Test จริง (สำคัญมาก — อย่าข้าม!)
+
+> **สรุปสั้นๆ:** อย่ายิง k6 ทันทีหลัง `docker compose up -d --build` แม้ `docker compose ps` จะขึ้น
+> `healthy` ครบแล้วก็ตาม — ให้วอร์มระบบก่อนเสมอ ไม่งั้น write p95 รอบแรกจะสูงผิดปกติ (cold start)
+> ทั้งที่โค้ด/config ไม่มีอะไรผิด
+
+### ทำไมต้องวอร์ม?
+
+ทดสอบจริงบนเซิร์ฟเวอร์ (4 vCPU) เจอผลต่างกันชัดเจนระหว่าง "ยิงทันทีหลัง build" กับ "ยิงตอนระบบอุ่นแล้ว"
+โดยที่**ไม่ได้แก้โค้ดหรือ config อะไรเลยระหว่างสองรอบนี้**:
+
+| สถานะระบบตอนยิง k6 | write p95 | ผ่าน `<1500ms` ไหม |
+|---|---|---|
+| Container เพิ่ง `Up` ได้ ~1 นาที (cold) | **1.58s** | ❌ ไม่ผ่าน |
+| ยิงซ้ำทันทีหลังจากนั้น (container เดิม ไม่ restart) | **736ms** | ✅ ผ่านสบายๆ |
+
+สาเหตุที่ระบบ "เย็น" ตอบช้ากว่าปกติชั่วคราว:
+- **Node.js V8 JIT** ยังไม่ optimize hot path ของโค้ด (request แรกๆ รันแบบ interpret ช้ากว่า compiled code)
+- **TypeORM/pg connection pool** (25 connection ต่อ api instance × 4 = สูงสุด 100) ยังไม่มี connection
+  จริงเปิดค้างไว้เลย — เพิ่งมาเปิดตอนโดน request burst แรกพร้อมกันหลายสิบ connection รวด
+- **ioredis** เพิ่งต่อ Redis ครั้งแรก ยังไม่มี pipeline/connection ที่ warm อยู่แล้ว
+
+`healthcheck` ของ Docker Compose เช็คแค่ "service ตอบสนองได้" (`/api/v1/health` ตอบ 200) ไม่ได้แปลว่า
+"ระบบพร้อมรับ 500 concurrent writes พร้อมกันแบบเต็มประสิทธิภาพ" สองอย่างนี้คนละเรื่องกัน
+
+### วิธีวอร์ม (รันหลัง `docker compose ps` ขึ้น healthy ครบ, ก่อนรัน k6 จริง)
+
+ใช้ **user/product ที่ไม่ใช่ตัวที่โหลดเทสต์จริงใช้** (`p-1001`) เพื่อไม่ให้ไปแตะสต็อกที่โจทย์จะเช็ค —
+วอร์มด้วย `p-1002` แทน (สต็อก 20 ชิ้น เยอะพอไม่มีทางหมดจากการวอร์ม 5 ครั้ง):
+
+**PowerShell:**
+```powershell
+Write-Host "🔥 กำลังวอร์มระบบ 20-30 วินาที..."
+$warmToken = (Invoke-RestMethod -Uri "http://localhost:8080/api/v1/auth/token" -Method Post -ContentType "application/json" -Body '{"userId":"warmup-user"}').accessToken
+
+1..30 | ForEach-Object {
+    Invoke-RestMethod -Uri "http://localhost:8080/api/v1/products?page=1&limit=10" -Method Get | Out-Null
+}
+1..5 | ForEach-Object {
+    try {
+        Invoke-RestMethod -Uri "http://localhost:8080/api/v1/orders" -Method Post `
+            -Headers @{ "Authorization" = "Bearer $warmToken" } -ContentType "application/json" `
+            -Body '{"productId":"p-1002"}' | Out-Null
+    } catch {}  # 409 ถ้าเคยวอร์มไปแล้วก่อนหน้า ไม่ใช่ปัญหา
+}
+Start-Sleep -Seconds 5   # ให้ worker/DB pool settle อีกนิด
+Write-Host "✅ วอร์มเสร็จ พร้อมยิง k6 จริงแล้ว"
+```
+
+**Bash:**
+```bash
+echo "🔥 กำลังวอร์มระบบ..."
+TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/token \
+  -H "Content-Type: application/json" -d '{"userId":"warmup-user"}' | jq -r .accessToken)
+
+for i in $(seq 1 30); do curl -s "http://localhost:8080/api/v1/products?page=1&limit=10" > /dev/null; done
+for i in $(seq 1 5); do
+  curl -s -X POST http://localhost:8080/api/v1/orders \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"productId":"p-1002"}' > /dev/null
+done
+sleep 5
+echo "✅ วอร์มเสร็จ พร้อมยิง k6 จริงแล้ว"
+```
+
+ลำดับขั้นตอนที่ถูกต้องทั้งหมด (สำหรับ**ครั้งแรก**ที่บูตระบบขึ้นมา):
+
+```bash
+docker compose down -v && docker compose up -d --build   # 1. เริ่มสะอาด, stock เต็ม
+# รอจน docker compose ps ขึ้น healthy ครบ แล้วค่อยรันสคริปต์วอร์มด้านบน (ใช้ p-1002)
+# 2. วอร์มระบบ (สคริปต์ข้างบน)
+# 3. ยิง k6 จริงได้เลย — p-1001 ยังเหลือ 50 อยู่ เพราะวอร์มไม่ได้แตะมัน
+```
+
+**ห้ามสลับลำดับ**: ถ้า `down -v` ใหม่หลังวอร์มไปแล้ว จะเสียการวอร์มทั้งหมดกลับไปเย็นเหมือนเดิม
+
+> ⚠️ **ขั้นตอนข้างบนนี้ใช้แค่ "ครั้งแรก" เท่านั้น** — ถ้าต้องทดสอบซ้ำหลายรอบ (เช่น ให้กลุ่มเพื่อนมายิง
+> เซิร์ฟเวอร์เราต่อกันหลายรอบตามสเปค PDF ข้อ 3) **ห้ามใช้ `down -v` ซ้ำอีก** เพราะจะเสียทั้ง warm-up
+> และช้าโดยไม่จำเป็น ให้ใช้คำสั่งรีเซ็ตแยกต่างหากแทน — ดูข้อ 6.1 ด้านล่าง
+
+---
+
+## 🔌 5. รายละเอียด API Endpoints & วิธีการทดสอบด้วย PowerShell
 
 Prefix หลักของทุก API คือ **`/api/v1`**
 
@@ -199,9 +288,59 @@ Prefix หลักของทุก API คือ **`/api/v1`**
 
 ---
 
-## 🧪 5. สคริปต์ทดสอบระบบ (Testing & Verification)
+## 🧪 6. สคริปต์ทดสอบระบบ (Testing & Verification)
 
-### 🔹 สคริปต์ทดสอบอัตโนมัติ / Chaos Suite (Interactive)
+### 🔹 6.1 รีเซ็ต + วอร์มระบบก่อนยิงรอบใหม่ (ใช้แทน `down -v` — คนละคำสั่งกับการยิงเทสต์)
+
+ใช้เมื่อไหร่: จะยิง k6 ซ้ำอีกรอบ (ทดสอบเองซ้ำ หรือ **ให้กลุ่มเพื่อนมายิงเซิร์ฟเวอร์เราต่อกันหลายรอบ
+ตามสเปค PDF ข้อ 3**) โดยไม่อยาก restart container ทั้งชุด
+
+**ทำไมต้องรีเซ็ต:** ทุกกลุ่มใช้ `user-1` ถึง `user-500` เหมือนกันหมดตามสเปคที่ตกลงกันไว้ (เพื่อให้ยิง
+ข้ามกลุ่มด้วย script เดียวกันได้) ถ้ากลุ่ม B ยิงต่อจากกลุ่ม A โดยไม่รีเซ็ต stock/order ของ user ชุดเดิม
+ที่กลุ่ม A ทิ้งไว้ยังอยู่ถาวรใน Postgres (ไม่ใช่แค่ Redis lock ที่หมดอายุใน 60 วินาที) — กลุ่ม B จะได้
+`202` ที่ดูผ่านตาแต่จริงๆ Worker เงียบๆ reject เป็น "ซื้อซ้ำ" เกือบหมด ไม่ได้ทดสอบ concurrency จริง
+
+**ทำไมไม่ใช้ `docker compose down -v` แทน:** ใช้ได้ผลเหมือนกัน แต่ container ต้อง restart ทั้งชุด
+ทำให้เจอ cold start ซ้ำทุกครั้ง (ดูข้อ 4) ต้องเสียเวลาวอร์มใหม่ทุกรอบที่เปลี่ยนกลุ่มผู้ยิง ซึ่งไม่จำเป็นเลย
+
+#### วิธีที่ 1 (แนะนำ): `warmup-and-reset.sh` — รีเซ็ต + วอร์ม ในคำสั่งเดียว ไม่พึ่ง Node.js เลย
+
+ใช้ `docker exec` + `curl` ล้วนๆ ไม่ต้องมี `node_modules` ติดตั้งอยู่ (สำคัญ: บนเซิร์ฟเวอร์จริงที่รัน
+แค่ผ่าน Docker เฉยๆ มักไม่มี `npm install` รันไว้ที่ host เลย — สคริปต์ Node จะ `MODULE_NOT_FOUND` ทันที
+ตัวนี้เลยพกไปรันที่ไหนก็ได้ที่มี `docker`/`bash`/`curl`):
+
+```bash
+bash loadtest/warmup-and-reset.sh
+# หรือถ้า clone repo ไว้: npm run loadtest:warmup
+```
+
+ทำ 3 ขั้นในคำสั่งเดียว: (1) รีเซ็ต stock ทุกสินค้ากลับเต็ม + ลบ `orders` ทั้งหมด + `redis-cli FLUSHALL`
+(2) วอร์มระบบด้วย `p-1002` (ไม่แตะสต็อก `p-1001` ที่โจทย์เช็คจริง) (3) ปริ๊นท์สต็อก `p-1001` ให้เช็คว่า
+กลับมาเต็มจริง — จบแล้วยิง k6 ได้ทันที ไม่ต้องทำอย่างอื่นเพิ่ม
+
+ปรับ target ได้ผ่าน env var ถ้า container ชื่อไม่ตรง default หรือรันจากเครื่องอื่น:
+```bash
+BASE_URL=http://<SERVER_IP>:8080/api/v1 POSTGRES_CONTAINER=flashsalebackend-postgres-1 \
+REDIS_CONTAINER=flashsalebackend-redis-1 bash loadtest/warmup-and-reset.sh
+```
+
+> 💡 เก็บสำเนาไฟล์นี้ไว้ในเครื่องเซิร์ฟเวอร์แยกก็ได้ (เช่น `~/tester/warmup-and-reset.sh`) เผื่อบางที
+> ไม่ได้ `git pull` repo ล่าสุดไว้ — เนื้อหาไม่ได้อ้างอิงอะไรจาก repo เลยนอกจากชื่อ container
+
+#### วิธีที่ 2: `reset-state.js` — รีเซ็ตอย่างเดียว (ต้องมี `npm install` ไว้ในเครื่องที่รัน)
+
+ถ้ารันจากเครื่อง dev ที่ `npm install` ไว้แล้ว (มี `pg`/`ioredis` ใน `node_modules`) ใช้ตัวนี้แทนได้:
+```bash
+npm run loadtest:reset
+```
+ทำแค่รีเซ็ต DB + Redis (ไม่วอร์ม) — ถ้าใช้ตัวนี้ต้องวอร์มเองแยกตามสคริปต์ในข้อ 4 ด้วย
+
+รันตัวใดตัวหนึ่งข้างบน **ก่อนเริ่มแต่ละรอบ/แต่ละกลุ่มที่จะยิง** แล้วค่อยไปยิง k6 ตามข้อ 6.3 ด้านล่าง
+(ไม่ต้อง restart container เลย — ระบบยัง "อุ่น" อยู่เหมือนเดิม)
+
+---
+
+### 🔹 6.2 สคริปต์ทดสอบอัตโนมัติ / Chaos Suite (Interactive)
 เมนูให้เลือกทดสอบทีละสถานการณ์ (spam attack, overbooking, edge cases, ฯลฯ) หรือรันครบทุกเคสรวดเดียว:
 
 ```bash
@@ -210,25 +349,80 @@ node loadtest/test-demo.js
 
 ---
 
-### 🔹 สคริปต์ k6 Load Test
+### 🔹 6.3 สคริปต์ k6 Load Test
 เตรียม JWT 500 users → GET 1,000 concurrent → POST 500 concurrent แย่งกันกดสั่งซื้อสินค้า `p-1001`:
 
+> ⚠️ **ครั้งแรกที่บูตระบบ:** วอร์มก่อน (ดูข้อ 4) ไม่งั้น write p95 รอบแรกจะขึ้นสูงผิดปกติ
+> **รอบถัดๆ ไป (ยิงซ้ำ/เปลี่ยนกลุ่มผู้ยิง):** แค่รัน `bash loadtest/warmup-and-reset.sh` (ข้อ 6.1) ก่อนยิง — ทำรีเซ็ต+วอร์มให้ในตัวแล้ว
+
+**ถ้ามี k6 ติดตั้งในเครื่องแล้ว (รันชี้เข้า localhost):**
 ```bash
 k6 run loadtest/loadtest.js
 ```
 
+**ถ้าไม่มี k6 ในเครื่อง (ใช้ Docker แทน — ใช้คำสั่งนี้ยิงเซิร์ฟเวอร์จริงข้ามเครื่องได้ด้วย):**
+```powershell
+Get-Content .\loadtest\loadtest.js | docker run --rm -i grafana/k6 run -e BASE_URL=http://<SERVER_IP>:8080/api/v1 -
+```
+
 ---
 
-### 🔹 ตรวจผลลัพธ์จริงในฐานข้อมูล (หลังยิง k6 แล้ว)
+### 🔹 6.4 ตรวจผลลัพธ์จริงในฐานข้อมูล (หลังยิง k6 แล้ว)
 เช็คว่าสต็อกเหลือ 0 พอดี และมี order จาก user ไม่ซ้ำกันครบตามสต็อก:
 
 ```bash
 node loadtest/verify.js
 ```
 
+หรือเช็คตรงใน Postgres เลย (คอลัมน์เป็น camelCase ต้องใส่ `"..."` ครอบชื่อ ไม่งั้น Postgres จะ
+fold เป็นตัวพิมพ์เล็กแล้วหา column ไม่เจอ):
+
+```bash
+docker compose exec postgres psql -U myuser -d flash_sale_db -c "
+  SELECT \"remainingStock\" FROM products WHERE \"productId\"='p-1001';
+  SELECT COUNT(*) AS total_orders, COUNT(DISTINCT \"userId\") AS unique_users, MAX(cnt) AS max_per_user
+  FROM (SELECT \"userId\", COUNT(*) cnt FROM orders WHERE \"productId\"='p-1001' GROUP BY \"userId\") t;
+"
+```
+
+เกณฑ์ผ่าน: `remainingStock=0` พอดี, `total_orders=50`, `unique_users=50`, `max_per_user=1`
+
 ---
 
-## 📊 6. Observability & Queue Dashboard (Bull-Board)
+## 🩺 7. Troubleshooting — เจอปัญหาที่ไม่ได้มาจากโค้ด
+
+รวมปัญหาที่เคยเจอจริงตอนรันบนเซิร์ฟเวอร์จริง ซึ่งไม่ใช่บั๊กของแอป แต่ทำให้ผล Load Test ดูเหมือนพัง —
+เช็คตรงนี้ก่อนสงสัยว่าโค้ดมีปัญหา
+
+### Write p95 พังเฉพาะรอบแรกหลัง `docker compose up`
+→ นี่คือ **cold start** (ดูรายละเอียดเต็มในข้อ 4) ให้วอร์มระบบก่อนยิงจริงเสมอ
+
+### Write p95 พังหนักผิดปกติ ทั้งที่เพิ่งวอร์มไปแล้ว / เคยผ่านมาก่อน
+→ เช็คว่ามี process อื่นแย่ง CPU อยู่หรือเปล่า โดยเฉพาะถ้าเซิร์ฟเวอร์มีคนต่อ VS Code Remote-SSH
+เข้ามาทำงานด้วย (แล้วปิดหน้าต่างไม่สะอาด process อาจค้างไม่ตายตาม):
+
+```bash
+uptime                              # ดู load average — ถ้าใกล้/เกินจำนวน core ตลอดเวลา = มีอะไรกิน CPU ค้าง
+top -bn1 -o %CPU | head -15         # ดู process ที่กิน CPU สูงสุด
+ps -eo pid,etime,cmd | grep claude  # เคยเจอ `claude auth status --json` ค้างกิน CPU 90-100%
+                                     # ตัวละ ~2 ชม. เพราะ VS Code Remote-SSH session หลุดแบบไม่ clean
+```
+
+ถ้าเจอ process ค้างแบบนี้ (etime นานผิดปกติ, %CPU สูงติดต่อกัน) `kill -9 <PID>` ทิ้งได้เลย ไม่กระทบ
+ข้อมูลหรือ container ของแอป — เป็นแค่ debug tool ที่ค้าง ไม่ใช่ส่วนหนึ่งของระบบ Flash Sale
+
+### Read p95 พังไปด้วยทั้งที่ไม่ควรแตะ backend เลย (มี Nginx cache แล้ว)
+→ เช็คว่า `nginx.conf` ยังเป็น `worker_processes 2;` อยู่ไหม (ห้ามใช้ `auto` ถ้า deploy บนเครื่องที่
+อาจถูกจำกัด CPU quota ด้วย cgroup เพราะ `nproc` ในคอนเทนเนอร์จะเห็น core ของ**โฮสต์**ทั้งหมด ไม่ใช่
+โควต้าจริงที่ได้ ทำให้ spawn worker process เกินจำเป็นจนแย่ง CPU กันเอง):
+
+```bash
+docker compose exec nginx sh -c "ps aux | grep 'nginx: worker' | wc -l"   # ควรได้เลขน้อยๆ (~4)
+```
+
+---
+
+## 📊 8. Observability & Queue Dashboard (Bull-Board)
 
 สามารถเปิดดูสถานะการทำงานของคิว (Jobs in Queue, Active, Completed, Failed) ได้ผ่านหน้าเว็บ Dashboard:
 

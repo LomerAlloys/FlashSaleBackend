@@ -6,7 +6,7 @@ import { Product } from '../entities/product.entity';
 import { Order } from '../entities/order.entity';
 import { ProductsService } from '../products/products.service';
 
-@Processor('order-queue', { concurrency: 25 })
+@Processor('order-queue', { concurrency: 5 })
 export class OrderProcessor extends WorkerHost {
   private readonly logger = new Logger(OrderProcessor.name);
 
@@ -39,16 +39,12 @@ export class OrderProcessor extends WorkerHost {
         throw new UnrecoverableError(`OUT_OF_STOCK: Product ${productId} is sold out!`);
       }
 
-      // 2. ตรวจสอบในตาราง Orders ป้องกันซื้อซ้ำ
-      const existingOrder = await manager.findOne(Order, {
-        where: { userId, productId },
-      });
-
-      if (existingOrder) {
-        throw new UnrecoverableError(`DUPLICATE_ORDER: User ${userId} already purchased ${productId}`);
-      }
-
-      // 3. ตัดสต็อกสินค้าใน DB และบันทึกคำสั่งซื้อ
+      // 2. ตัดสต็อกสินค้าใน DB และบันทึกคำสั่งซื้อ
+      // หมายเหตุ: ไม่ต้อง SELECT เช็ค existingOrder แยกก่อน — UNIQUE("userId","productId")
+      // ที่ระดับ DB (ดู order.entity.ts) จะดักซ้ำให้เองตอน manager.save(order) ข้างล่าง
+      // (แปลงเป็น UnrecoverableError ผ่าน error code 23505 ในบล็อก catch) ทำให้ตัด
+      // round-trip นี้ออกจากเส้นทางที่สำเร็จปกติ (ของกรณีซ้ำเป็น edge case ที่ควรถูก
+      // ดักไปแล้วตั้งแต่ Redis SETNX lock ชั้น API และ BullMQ jobId ชั้นคิว)
       product.remainingStock -= 1;
       const order = manager.create(Order, {
         userId,

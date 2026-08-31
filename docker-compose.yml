@@ -1,13 +1,31 @@
+# ⚡ ulimit ของ container ไม่ inherit จาก host โดยอัตโนมัติ (แม้ host จะ tune
+# /etc/security/limits.conf ไว้ 65535 แล้ว Docker ก็ยัง fallback เป็นค่า default
+# ของตัวเอง ~1024 ให้ทุก container เว้นแต่ระบุตรงนี้) — ต้องประกาศตายตัวไว้ที่นี่
+# เพื่อให้ "1-click deploy" ได้ผลลัพธ์เดิมไม่ว่าจะรันบนเครื่องไหน โดยไม่ต้องพึ่งการ
+# ตั้งค่า host ด้วยมือแยกต่างหาก
+x-ulimits: &nofile-65535
+  nofile:
+    soft: 65535
+    hard: 65535
+
 services:
   # 📌 1. PostgreSQL (single instance, no replication)
   postgres:
     image: bitnami/postgresql:latest
+    ulimits: *nofile-65535
     volumes:
       - postgres-data:/bitnami/postgresql
     environment:
       - POSTGRESQL_USERNAME=myuser
       - POSTGRESQL_PASSWORD=mypassword
       - POSTGRESQL_DATABASE=flash_sale_db
+      - POSTGRESQL_SHARED_BUFFERS=256MB
+      - POSTGRESQL_MAX_CONNECTIONS=200
+      # max_wal_size ใหญ่ขึ้น + checkpoint_completion_target สูงขึ้น = กระจาย I/O ของ
+      # checkpoint ให้ค่อยๆ ทยอยเขียนตลอดช่วงเวลา ไม่ใช่กระแทกทีเดียวตอน checkpoint เกิด —
+      # ลดโอกาสที่ checkpoint ดันไปชนพอดีกับ write burst 500 requests แล้วทำให้ p95 กระโดด
+      # (จุดที่สงสัยว่าเป็นสาเหตุนึงของความแกว่ง 180ms-1.6s ที่เห็นข้ามรอบทดสอบ)
+      - POSTGRESQL_EXTRA_FLAGS=-c synchronous_commit=off -c work_mem=32MB -c wal_buffers=16MB -c max_wal_size=2GB -c checkpoint_completion_target=0.9
     ports:
       - "5432:5432"
     healthcheck:
@@ -20,21 +38,25 @@ services:
   # 📌 2. Redis
   redis:
     image: redis:7-alpine
+    ulimits: *nofile-65535
     ports:
       - "6379:6379"
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes
+    # หมายเหตุ: ปิด AOF (--appendonly no) เช่นเดียวกับที่ปิด RDB (--save "") ไปแล้ว —
+    # Redis ในระบบนี้เป็นแค่ broker/lock ชั่วคราว (source of truth จริงคือ Postgres
+    # ที่ worker commit เข้าไป) ไม่ใช่ที่เก็บข้อมูลถาวร ตอนเปิด AOF ไว้ ทุกคำสั่งเขียน
+    # (SETNX ล็อก + BullMQ enqueue ที่ทำงานทุก order) ต้องรอ fsync ก่อนตอบกลับ ซึ่งบน
+    # disk แบบ virtualized (Docker Desktop / cloud VM) fsync มีโอกาสหน่วงกระทันหันเป็น
+    # วินาที ทำให้ write path ช้าเฉพาะจังหวะนั้น (อ่านไม่กระทบเพราะเป็นคำสั่งอ่านอย่างเดียว)
+    command: redis-server --appendonly no --tcp-backlog 65535 --maxmemory 1gb --maxmemory-policy noeviction --save ""
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
       timeout: 5s
       retries: 10
 
-  # 📌 3. One-off migration runner — ทำให้ `docker compose up` เป็น 1-click start จริง
-  #    (ไม่ต้องรัน `npm run migration:run` แยกเองอีกต่อไป; ไม่พึ่ง init.sql auto-init
-  #    ที่พิสูจน์แล้วว่าไม่เสถียร — ใช้ TypeORM migration ที่เทสผ่านจริงเป็นหลักเสมอ
-  #    migration ถูกเขียนให้ idempotent (hasTable/ON CONFLICT) อยู่แล้ว ปลอดภัยแม้รันซ้ำ)
+  # 📌 3. One-off migration runner
   migrate:
     build:
       context: .
@@ -53,6 +75,7 @@ services:
   # 📌 4. API Instance 1
   api1:
     build: .
+    ulimits: *nofile-65535
     ports:
       - "3001:3000"
     environment:
@@ -82,6 +105,7 @@ services:
   # 📌 5. API Instance 2
   api2:
     build: .
+    ulimits: *nofile-65535
     ports:
       - "3002:3000"
     environment:
@@ -111,6 +135,7 @@ services:
   # 📌 6. API Instance 3
   api3:
     build: .
+    ulimits: *nofile-65535
     ports:
       - "3003:3000"
     environment:
@@ -137,15 +162,50 @@ services:
       retries: 10
       start_period: 10s
 
-  # 📌 7. Nginx Load Balancer
+  # 📌 7. API Instance 4 (Match 4 CPU Cores)
+  api4:
+    build: .
+    ulimits: *nofile-65535
+    ports:
+      - "3004:3000"
+    environment:
+      - INSTANCE_ID=Instance-4
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=myuser
+      - DB_PASSWORD=mypassword
+      - DB_NAME=flash_sale_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=local-dev-flash-sale-jwt-secret-do-not-use-in-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/v1/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # 📌 8. Nginx Load Balancer
   nginx:
     image: nginx:alpine
+    ulimits: *nofile-65535
+    # net.core.somaxconn ผูกกับ network namespace ของแต่ละ container ได้ (ตั้งแต่
+    # kernel รองรับ net namespace) เลยกำหนดตรงนี้แทนการพึ่ง sysctl ระดับ host —
+    # ให้ `listen 80 backlog=16384` ใน nginx.conf มีผลจริง ไม่ถูก OS ตัดเหลือ backlog
+    # default (มักเป็น 128) แม้ deploy บนเครื่องที่ยังไม่เคย tune อะไรเลยก็ตาม
+    sysctls:
+      - net.core.somaxconn=65535
     ports:
       - "8080:80"
     volumes:
       - /dev/shm:/dev/shm
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       api1:

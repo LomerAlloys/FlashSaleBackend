@@ -17,22 +17,22 @@ export class OrdersService {
       throw new BadRequestException('productId is required');
     }
 
-    // 1. Atomic SETNX Concurrency Lock (< 0.2ms)
+    // 1. Atomic SETNX Concurrency Lock (< 0.1ms) - TTL 60s ตาม CONTRACT.md
     const userOrderLockKey = `lock:order:${userId}:${productId}`;
-    const acquired = await this.redis.set(userOrderLockKey, '1', 'EX', 120, 'NX');
+    const acquired = await this.redis.set(userOrderLockKey, '1', 'EX', 60, 'NX');
 
     if (!acquired) {
       throw new ConflictException('You have already submitted an order for this product.');
     }
 
-    // 2. Ultra-fast product existence check from L1 memory
+    // 2. Fast product existence check from L1 RAM (0.0001ms)
     const productExists = await this.productsService.exists(productId);
     if (!productExists) {
       await this.redis.del(userOrderLockKey);
       throw new NotFoundException(`Product ${productId} not found`);
     }
 
-    // 3. Fast Enqueue into BullMQ
+    // 3. Fast Enqueue into BullMQ — ต้อง await เสมอ เพื่อจับข้อผิดพลาด (เช่น jobId ซ้ำ) และแปลงเป็น 409
     try {
       const job = await this.ordersQueue.add(
         'process-order',

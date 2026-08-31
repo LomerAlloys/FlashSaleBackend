@@ -1,8 +1,6 @@
 import { Module, Global } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { CacheModule } from '@nestjs/cache-manager';
-import { redisStore } from 'cache-manager-redis-yet';
 import { BullModule } from '@nestjs/bullmq';
 import { LoggerModule } from 'nestjs-pino';
 
@@ -21,7 +19,7 @@ import { OrdersModule } from './orders/orders.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
 
-    // 📌 Structured Log (Pino) - ตั้งค่า level: warn และ autoLogging: false เพื่อความเร็วสูงสุดตอนยิง Load Test
+    // 📌 Structured Log (Pino) - ตั้งค่า level: warn และ autoLogging: false เพื่อความเร็วสูงสุด
     LoggerModule.forRoot({
       pinoHttp: {
         level: 'warn',
@@ -44,25 +42,12 @@ import { OrdersModule } from './orders/orders.module';
       },
     }),
 
-    // 🔴 Redis CacheModule
-    CacheModule.registerAsync({
-      isGlobal: true,
-      useFactory: async () => ({
-        store: await redisStore({
-          socket: {
-            host: process.env.REDIS_HOST || 'localhost',
-            port: parseInt(process.env.REDIS_PORT || '6379', 10),
-          },
-          ttl: (parseInt(process.env.REDIS_TTL || '300', 10)) * 1000,
-        }),
-      }),
-    }),
-
     // 📨 BullMQ Configuration
     BullModule.forRoot({
       connection: {
         host: process.env.REDIS_HOST || 'localhost',
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        enableAutoPipelining: true,
       },
     }),
 

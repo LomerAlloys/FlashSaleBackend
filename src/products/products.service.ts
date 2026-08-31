@@ -73,7 +73,13 @@ export class ProductsService {
     l1Cache.set(cacheKey, { data: result, expireAt: now + 1500 });
 
     try {
-      await this.redis.set(cacheKey, JSON.stringify(result), 'EX', 30);
+      // เก็บ key นี้ไว้ใน SET เพื่อให้ invalidate หาเจอทุก page/limit ที่เคยถูก request จริง
+      // (ไม่ hardcode รายการ page/limit ตายตัว — ไม่งั้น request ที่ limit แปลกๆ จะไม่ถูก
+      // invalidate เลย ขัดกับกฎ "ต้อง invalidate products:page:* ทุกครั้ง")
+      await Promise.all([
+        this.redis.set(cacheKey, JSON.stringify(result), 'EX', 30),
+        this.redis.sadd('products:page:keys', cacheKey),
+      ]);
     } catch (err) {
       this.logger.error(`Redis set error: ${err.message}`);
     }
@@ -98,18 +104,15 @@ export class ProductsService {
     return exists;
   }
 
+  // ⚡ Invalidate ด้วย SET ที่เก็บ key จริงที่เคยถูก cache ไว้ (เร็วกว่า SCAN แต่ยังถูกต้อง
+  // ครบทุก page/limit ที่เคยมีคน request จริง ไม่ใช่แค่ list ตายตัว)
   async invalidateProductCache() {
     l1Cache.clear();
-    const pattern = 'products:page:*';
-    let cursor = '0';
     try {
-      do {
-        const [nextCursor, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
-        cursor = nextCursor;
-        if (keys.length > 0) {
-          await this.redis.del(...keys);
-        }
-      } while (cursor !== '0');
+      const keys = await this.redis.smembers('products:page:keys');
+      if (keys.length > 0) {
+        await this.redis.del(...keys, 'products:page:keys');
+      }
     } catch (err) {
       this.logger.error(`Failed to invalidate cache: ${err.message}`);
     }

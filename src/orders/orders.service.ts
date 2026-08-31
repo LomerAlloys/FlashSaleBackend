@@ -26,14 +26,14 @@ export class OrdersService {
       throw new ConflictException('You have already submitted an order for this product.');
     }
 
-    // 2. Ultra-fast product existence check from L1 RAM
+    // 2. Fast product existence check from L1 RAM
     const productExists = await this.productsService.exists(productId);
     if (!productExists) {
       await this.redis.del(userOrderLockKey);
       throw new NotFoundException(`Product ${productId} not found`);
     }
 
-    // 3. Lightning Fast BullMQ Enqueue (Minimal Lua overhead)
+    // 3. Fast Enqueue into BullMQ
     try {
       const job = await this.ordersQueue.add(
         'process-order',
@@ -45,8 +45,8 @@ export class OrdersService {
           // attempts:3 ไว้เผื่อ error ชั่วคราวจริงๆ (DB/connection blip) เท่านั้น
           attempts: 3,
           backoff: { type: 'exponential', delay: 200 },
-          // removeOnComplete/Fail ต่ำเกินไปจะลบ job เก่าทิ้งกลางอากาศตอนมี failed (ของหมด) เกิน
-          // ในเทสเดียว (500 คนแย่ง 50 ชิ้น = fail ~450 ตัว) ทำให้ Bull-Board โชว์ประวัติไม่ครบ
+          // removeOnComplete/Fail: true จะลบ job ทันทีที่จบ ทำให้ Bull-Board ไม่เหลือ
+          // ประวัติให้ดูเลย (ต้องมีไว้แคปหน้าจอส่ง report) ใช้ 500 แทน
           removeOnComplete: 500,
           removeOnFail: 500,
         },

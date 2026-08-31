@@ -22,7 +22,8 @@
     "migration:generate": "npm run typeorm migration:generate -- -d ./src/data-source.ts",
     "migration:run": "npm run typeorm migration:run -- -d ./src/data-source.ts",
     "migration:revert": "npm run typeorm migration:revert -- -d ./src/data-source.ts",
-    "migration:run:compiled": "node dist/run-migrations.js"
+    "migration:run:compiled": "node dist/run-migrations.js",
+    "loadtest:reset": "node loadtest/reset-state.js"
   },
   "dependencies": {
     "@bull-board/api": "^9.4.0",

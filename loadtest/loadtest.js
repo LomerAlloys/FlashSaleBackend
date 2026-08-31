@@ -67,7 +67,7 @@ export const options = {
 // 🔑 1. Preparation Phase: วนลูปขอ JWT ให้กับ 500 ผู้ใช้ที่ไม่ซ้ำกันล่วงหน้า
 export function setup() {
   printBanner();
-  console.log(`🚀 [1. Preparation Phase] กำลังวนลูปขอ JWT สำหรับผู้ใช้ไม่ซ้ำกัน 500 คน (user-1 ถึง user-${TOTAL_USERS})...`);
+  console.log(`[1. Preparation Phase] กำลังวนลูปขอ JWT สำหรับผู้ใช้ไม่ซ้ำกัน 500 คน (user-1 ถึง user-${TOTAL_USERS})...`);
   const tokens = [];
   for (let i = 1; i <= TOTAL_USERS; i++) {
     const res = http.post(
@@ -82,7 +82,7 @@ export function setup() {
       console.log(`   ...ได้ JWT แล้ว ${i}/${TOTAL_USERS} คน`);
     }
   }
-  console.log(`✅ [Preparation Complete] ได้รับ JWT Tokens ครบทั้ง 500 คนแล้ว พร้อมเริ่มการยิงโหลด!\n`);
+  console.log(`[Preparation Complete] ได้รับ JWT Tokens ครบทั้ง 500 คนแล้ว พร้อมเริ่มการยิงโหลด!\n`);
   return { tokens, startedAt: Date.now() };
 }
 
@@ -156,32 +156,35 @@ export function teardown(data) {
       const pct = (stats.cache.hitRatio || 0) * 100;
       cacheHitRatioPct.add(pct);
       console.log(
-        `\n📊 [Cache Performance] App-level Cache Hit Ratio (Redis/L1 ใน ProductsService): ` +
-          `${pct.toFixed(2)}% (hit=${stats.cache.hit}, miss=${stats.cache.miss}, total=${stats.cache.total}) — ` +
-          `ตัวเลขนี้นับเฉพาะ request ที่ทะลุผ่าน Nginx RAM microcache มาถึงแอปจริงๆ เท่านั้น ` +
-          `(ส่วนใหญ่ของ read load ถูก Nginx ตอบเองจากแคชโดยไม่มาถึงชั้นนี้เลย)`
+        `\n[Cache Performance] App-level Cache Hit Ratio (Redis/L1 in ProductsService): ` +
+          `${pct.toFixed(2)}% (hit=${stats.cache.hit}, miss=${stats.cache.miss}, total=${stats.cache.total}) - ` +
+          `this only counts requests that got past the Nginx RAM microcache to the app itself ` +
+          `(most of read_load is answered by Nginx straight from cache, never reaching this layer)`
       );
     } catch (e) {
-      console.warn(`⚠️  อ่าน cache-stats ไม่สำเร็จ: ${e}`);
+      console.warn(`[warn] failed to parse cache-stats response: ${e}`);
     }
   } else {
-    console.warn(`⚠️  ดึง /products/cache-stats ไม่ได้ (status ${res.status})`);
+    console.warn(`[warn] could not reach /products/cache-stats (status ${res.status})`);
   }
   console.log(
-    `ℹ️  Queue Monitoring (Jobs In Queue / Completed / Failed) ต้องแคปจากหน้า Bull-Board ` +
-      `จริงเสมอ (${BASE_URL.replace(/\/api\/v1$/, '')}/admin/queues) เพราะเป็นสถานะฝั่ง Worker ` +
-      `ไม่ใช่สิ่งที่ k6 มองเห็นจากฝั่ง Client\n`
+    `[info] Queue Monitoring (Jobs In Queue / Completed / Failed) must be captured from the ` +
+      `Bull-Board UI (${BASE_URL.replace(/\/api\/v1$/, '')}/admin/queues) - that's worker-side state ` +
+      `k6 cannot see from the client side\n`
   );
 }
 
+// หมายเหตุ: ใช้ ASCII ล้วนตรงนี้เหมือนกับ scorecard — terminal บางตัว (โดยเฉพาะ Windows
+// PowerShell ที่ output encoding ไม่ใช่ UTF-8) render Unicode box-drawing/emoji เป็น "?"
+// เวลา copy ไปแปะรายงานเลยอ่านไม่ออก
 function printBanner() {
   console.log(`
-╔══════════════════════════════════════════════════════════════════╗
-║   ⚡ FLASH SALE SYSTEM — LOAD TEST (k6)                            ║
-║   Target: ${BASE_URL.padEnd(56)}║
-║   Scenario: 500 users prep → 1,000 VU read (30s) →                ║
-║             500 VU write burst @t=5s (15% duplicate-batch)         ║
-╚══════════════════════════════════════════════════════════════════╝
+=====================================================================
+   FLASH SALE SYSTEM - LOAD TEST (k6)
+   Target: ${BASE_URL}
+   Scenario: 500 users prep -> 1,000 VU read (30s) ->
+             500 VU write burst @t=5s (15% duplicate-batch)
+=====================================================================
 `);
 }
 
@@ -208,24 +211,27 @@ export function handleSummary(data) {
 
   const overallPass = rows.every((r) => r[2] !== false);
 
+  // หมายเหตุ: ใช้ ASCII ล้วน (ไม่มี box-drawing Unicode/emoji นอกจาก ✓/✗ ที่ k6 เองก็ใช้
+  // อยู่แล้วในสรุปผลมาตรฐาน) เพราะ terminal บางตัว (เช่น Windows PowerShell ที่ codepage
+  // ไม่ใช่ UTF-8) render กล่อง Unicode/emoji เป็น "?" หมด อ่านไม่ออกเลย
   const lines = [];
   lines.push('');
-  lines.push('┌──────────────────────────────────────────────────────────┐');
-  lines.push('│  🏆 FLASH SALE — SCORECARD (ตาม Threshold ในโจทย์)         │');
-  lines.push('├──────────────────────────────────────────────────────────┤');
+  lines.push('=============================================================');
+  lines.push('  FLASH SALE - SCORECARD (per PDF thresholds)');
+  lines.push('=============================================================');
   rows.forEach(([label, val, pass]) => {
-    const icon = pass === null ? '❔' : pass ? '✅' : '❌';
-    lines.push(`│  ${icon}  ${label.padEnd(28)} ${String(val).padStart(12)}   │`);
+    const mark = pass === null ? '?' : pass ? 'v' : 'x';
+    lines.push(`  [${mark}] ${label.padEnd(28)} ${String(val).padStart(10)}`);
   });
-  lines.push('├──────────────────────────────────────────────────────────┤');
-  lines.push(`│  📦 Orders accepted (202)          ${String(accepted).padStart(12)}   │`);
-  lines.push(`│  🔁 Orders duplicate-blocked (409) ${String(duplicate).padStart(12)}   │`);
-  lines.push(`│  ⚠️  Orders unexpected status       ${String(unexpected).padStart(12)}   │`);
+  lines.push('-------------------------------------------------------------');
+  lines.push(`  Orders accepted (202)            ${String(accepted).padStart(10)}`);
+  lines.push(`  Orders duplicate-blocked (409)   ${String(duplicate).padStart(10)}`);
+  lines.push(`  Orders unexpected status         ${String(unexpected).padStart(10)}`);
   lines.push(
-    `│  🗄️  App cache hit ratio (Redis/L1) ${(cacheHit === null ? 'N/A' : cacheHit.toFixed(2) + '%').padStart(12)}   │`
+    `  App cache hit ratio (Redis/L1)   ${(cacheHit === null ? 'N/A' : cacheHit.toFixed(2) + '%').padStart(10)}`
   );
-  lines.push('└──────────────────────────────────────────────────────────┘');
-  lines.push(overallPass ? '🎉 ผ่านครบทุก Threshold' : '🚨 มี Threshold ที่ยังไม่ผ่าน — เช็คด้านบน');
+  lines.push('=============================================================');
+  lines.push(overallPass ? '  RESULT: ALL THRESHOLDS PASSED' : '  RESULT: SOME THRESHOLDS FAILED - see above');
   lines.push('');
 
   return {

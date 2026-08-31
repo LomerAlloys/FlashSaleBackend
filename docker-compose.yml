@@ -21,7 +21,11 @@ services:
       - POSTGRESQL_DATABASE=flash_sale_db
       - POSTGRESQL_SHARED_BUFFERS=256MB
       - POSTGRESQL_MAX_CONNECTIONS=200
-      - POSTGRESQL_EXTRA_FLAGS=-c synchronous_commit=off -c work_mem=32MB -c wal_buffers=16MB
+      # max_wal_size ใหญ่ขึ้น + checkpoint_completion_target สูงขึ้น = กระจาย I/O ของ
+      # checkpoint ให้ค่อยๆ ทยอยเขียนตลอดช่วงเวลา ไม่ใช่กระแทกทีเดียวตอน checkpoint เกิด —
+      # ลดโอกาสที่ checkpoint ดันไปชนพอดีกับ write burst 500 requests แล้วทำให้ p95 กระโดด
+      # (จุดที่สงสัยว่าเป็นสาเหตุนึงของความแกว่ง 180ms-1.6s ที่เห็นข้ามรอบทดสอบ)
+      - POSTGRESQL_EXTRA_FLAGS=-c synchronous_commit=off -c work_mem=32MB -c wal_buffers=16MB -c max_wal_size=2GB -c checkpoint_completion_target=0.9
     ports:
       - "5432:5432"
     healthcheck:

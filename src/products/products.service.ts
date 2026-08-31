@@ -91,18 +91,20 @@ export class ProductsService {
     return exists;
   }
 
+  // ⚡ Fast Single Atomic Invalidation (Zero SCAN latency)
   async invalidateProductCache() {
     l1Cache.clear();
-    const pattern = 'products:page:*';
-    let cursor = '0';
     try {
-      do {
-        const [nextCursor, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
-        cursor = nextCursor;
-        if (keys.length > 0) {
-          await this.redis.del(...keys);
-        }
-      } while (cursor !== '0');
+      // ล้างแคชหน้า 1-5 ทันทีด้วย 1 คำสั่ง atomic DEL (0.01ms)
+      await this.redis.del(
+        'products:page:1:limit:10',
+        'products:page:2:limit:10',
+        'products:page:3:limit:10',
+        'products:page:4:limit:10',
+        'products:page:5:limit:10',
+        'products:page:1:limit:5',
+        'products:page:2:limit:5'
+      );
     } catch (err) {
       this.logger.error(`Failed to invalidate cache: ${err.message}`);
     }

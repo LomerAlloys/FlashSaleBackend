@@ -25,14 +25,14 @@ export class OrdersService {
       throw new ConflictException('You have already submitted an order for this product.');
     }
 
-    // 2. Ultra-fast product existence check from L1 RAM
+    // 2. Fast product existence check from L1 RAM
     const productExists = await this.productsService.exists(productId);
     if (!productExists) {
       await this.redis.del(userOrderLockKey);
       throw new NotFoundException(`Product ${productId} not found`);
     }
 
-    // 3. Lightning Fast BullMQ Enqueue (Minimal Lua overhead)
+    // 3. Fast Enqueue into BullMQ
     try {
       const job = await this.ordersQueue.add(
         'process-order',
@@ -41,7 +41,7 @@ export class OrdersService {
           jobId: `${userId}_${productId}`,
           attempts: 1,
           removeOnComplete: true,
-          removeOnFail: 50,
+          removeOnFail: true,
         },
       );
 

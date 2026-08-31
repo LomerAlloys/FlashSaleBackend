@@ -4,7 +4,6 @@ import { ValidationPipe } from '@nestjs/common';
 import { Logger } from 'nestjs-pino';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
-// นำเข้าเครื่องมือสำหรับ Bull Board (Monitoring)
 import { ExpressAdapter } from '@bull-board/express';
 import { createBullBoard } from '@bull-board/api';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
@@ -14,7 +13,6 @@ import type { Queue } from 'bullmq';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   app.enableCors();
-
   app.useLogger(app.get(Logger));
 
   app.useGlobalPipes(
@@ -25,15 +23,10 @@ async function bootstrap() {
     }),
   );
 
-  // ตั้งค่า Prefix ทุก Endpoint เป็น /api/v1 (ตามข้อกำหนด API Specs)
   app.setGlobalPrefix('api/v1');
-
-  // แปลง error response ให้ตรงตาม CONTRACT.md ({status:"error"|"duplicate", message})
   app.useGlobalFilters(new HttpExceptionFilter());
 
-  // ==========================================
-  // ตั้งค่า Bull Board Dashboard สำหรับดูสถานะคิว
-  // ==========================================
+  // Setup Bull Board
   const serverAdapter = new ExpressAdapter();
   serverAdapter.setBasePath('/admin/queues'); 
 
@@ -49,10 +42,13 @@ async function bootstrap() {
   }
 
   const port = process.env.PORT ?? 3000;
-  await app.listen(port);
+  const server = await app.listen(port);
   
-  const logger = app.get(Logger);
-  logger.log(`\n🚀 Flash Sale Backend is running on: http://localhost:${port}/api/v1`);
-  logger.log(`📊 Bull Board (Monitoring Dashboard) is available at: http://localhost:${port}/admin/queues\n`);
+  // ⚡ Tune Node.js HTTP Server for 50,000 Concurrent Keep-Alive Connections
+  if (server && server.keepAliveTimeout !== undefined) {
+    server.keepAliveTimeout = 65000;
+    server.headersTimeout = 66000;
+    server.maxConnections = 50000;
+  }
 }
 bootstrap();

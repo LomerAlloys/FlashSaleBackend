@@ -47,6 +47,7 @@ import { OrdersModule } from './orders/orders.module';
       connection: {
         host: process.env.REDIS_HOST || 'localhost',
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        enableAutoPipelining: true,
       },
     }),
 

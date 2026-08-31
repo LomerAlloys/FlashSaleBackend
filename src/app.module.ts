@@ -25,10 +25,18 @@ import { OrdersModule } from './orders/orders.module';
     // 📌 Structured Log (Pino)
     LoggerModule.forRoot({
       pinoHttp: {
+        // production: log แค่ warn/error ขึ้นไป — ตัด log "request completed" ทุก request
+        // ทิ้ง (ถูกๆ ตอน dev แต่กิน CPU จริงตอนโหลดสูง เพราะต้อง serialize req/res ทุกครั้ง)
+        level: process.env.NODE_ENV === 'production' ? 'warn' : 'info',
         genReqId: (req) => req.headers['x-correlation-id'] || randomUUID(),
         customProps: () => ({
           instanceId: process.env.INSTANCE_ID || 'Unknown Instance',
         }),
+        // ตัด header เต็มๆ ออกจาก log ที่ยังเหลือ (error/warn) ให้ serialize เบาลง
+        serializers: {
+          req: (req) => ({ method: req.method, url: req.url }),
+          res: (res) => ({ statusCode: res.statusCode }),
+        },
       },
     }),
 

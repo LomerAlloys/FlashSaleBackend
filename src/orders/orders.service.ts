@@ -21,7 +21,7 @@ export class OrdersService {
 
     // 1. Limit 1 per User: ใช้อัลกอริทึม Atomic SETNX ของ Redis ล็อกสิทธิ์ทันที
     const userOrderLockKey = `lock:order:${userId}:${productId}`;
-    const acquired = await this.redis.set(userOrderLockKey, '1', 'EX', 120, 'NX');
+    const acquired = await this.redis.set(userOrderLockKey, '1', 'EX', 60, 'NX');
 
     if (!acquired) {
       throw new ConflictException('You have already submitted an order for this product.');

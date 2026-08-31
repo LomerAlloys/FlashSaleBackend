@@ -2,24 +2,15 @@ services:
   # 📌 1. PostgreSQL (single instance, no replication)
   postgres:
     image: bitnami/postgresql:latest
-    command:
-      - "postgres"
-      - "-c"
-      - "shared_buffers=256MB"
-      - "-c"
-      - "max_connections=200"
-      - "-c"
-      - "work_mem=32MB"
-      - "-c"
-      - "synchronous_commit=off"
-      - "-c"
-      - "wal_buffers=16MB"
     volumes:
       - postgres-data:/bitnami/postgresql
     environment:
       - POSTGRESQL_USERNAME=myuser
       - POSTGRESQL_PASSWORD=mypassword
       - POSTGRESQL_DATABASE=flash_sale_db
+      - POSTGRESQL_SHARED_BUFFERS=256MB
+      - POSTGRESQL_MAX_CONNECTIONS=200
+      - POSTGRESQL_EXTRA_FLAGS=-c synchronous_commit=off -c work_mem=32MB -c wal_buffers=16MB
     ports:
       - "5432:5432"
     healthcheck:

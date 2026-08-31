@@ -32,17 +32,16 @@ export class OrdersService {
       throw new NotFoundException(`Product ${productId} not found`);
     }
 
-    // 3. Fast Enqueue into BullMQ
+    // 3. Lightning Fast Enqueue (Lean Job Options for sub-millisecond Lua execution)
     try {
       const job = await this.ordersQueue.add(
         'process-order',
         { userId, productId },
         {
           jobId: `${userId}_${productId}`,
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 200 },
-          removeOnComplete: 500,
-          removeOnFail: 500,
+          attempts: 1,
+          removeOnComplete: 50,
+          removeOnFail: 50,
         },
       );
 

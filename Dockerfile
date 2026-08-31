@@ -1,23 +1,23 @@
 # ---- Build stage ----
-FROM node:18-alpine AS build
+FROM node:22-alpine AS build
 
 WORKDIR /usr/src/app
 
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY . .
 RUN npm run build
 
 # ---- Production stage ----
-FROM node:18-alpine AS production
+FROM node:22-alpine AS production
 
 ENV NODE_ENV=production
 
 WORKDIR /usr/src/app
 
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm ci --omit=dev
 
 COPY --from=build /usr/src/app/dist ./dist
 

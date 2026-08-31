@@ -20,8 +20,9 @@ docker compose ps
 
 ## 2. Load Balancing
 
-ยิง `/api/v1/health` (หรือ `/status`) 9 ครั้ง แล้วนับชื่อ instance
-**ต้องเห็นครบทั้ง 3 ตัว** ถ้าเห็นตัวเดียว = LB ไม่ทำงาน หรือมี instance ตายอยู่
+ยิง `/api/v1/status` (เบากว่า `/api/v1/health` เพราะไม่ query DB/Redis) 12 ครั้ง แล้วนับ `instanceId`
+ที่ตอบกลับมา — docker-compose.yml ตอนนี้มี **api1-api4 รวม 4 instances**
+**ต้องเห็นครบทั้ง 4 ตัว** ถ้าเห็นน้อยกว่านั้น = LB ไม่ทำงาน หรือมี instance ตายอยู่
 
 ## 3. Cache-Aside
 
@@ -49,14 +50,19 @@ k6 run loadtest/loadtest.js
 
 ## 6. Data Integrity — ข้อสำคัญที่สุด
 
+คอลัมน์ทั้งหมดเป็น camelCase และถูกสร้างแบบ quoted (ดู `src/migrations/1787802529312-InitSchema.ts`)
+ต้องใส่เครื่องหมายคำพูดครอบชื่อคอลัมน์เป๊ะๆ ไม่งั้น Postgres จะ fold เป็นตัวพิมพ์เล็กแล้วหา column ไม่เจอ
+ชื่อ user/database ต้องตรงกับ `docker-compose.yml` (`POSTGRESQL_USERNAME=myuser`,
+`POSTGRESQL_DATABASE=flash_sale_db`) ไม่ใช่ `flashsale`:
+
 ```bash
-docker compose exec postgres psql -U flashsale -d flashsale -c "
-  SELECT remaining_stock FROM products WHERE product_id='p-1001';
+docker compose exec postgres psql -U myuser -d flash_sale_db -c "
+  SELECT \"remainingStock\" FROM products WHERE \"productId\"='p-1001';
   SELECT COUNT(*) AS total_orders,
-         COUNT(DISTINCT user_id) AS unique_users,
+         COUNT(DISTINCT \"userId\") AS unique_users,
          MAX(cnt) AS max_per_user
-  FROM (SELECT user_id, COUNT(*) cnt FROM orders
-        WHERE product_id='p-1001' GROUP BY user_id) t;
+  FROM (SELECT \"userId\", COUNT(*) cnt FROM orders
+        WHERE \"productId\"='p-1001' GROUP BY \"userId\") t;
 "
 ```
 
@@ -69,8 +75,10 @@ docker compose exec postgres psql -U flashsale -d flashsale -c "
 ## 7. Queue
 
 เปิด `http://localhost:8080/admin/queues` (Bull-Board)
-ต้องเห็น completed jobs (ถ้าว่างเปล่า แปลว่าตั้ง `removeOnComplete: true` อยู่ ต้องเปลี่ยนเป็น false
-เพราะต้องแคปหน้าจอส่งอาจารย์) และเห็น failed jobs ของเคส "ของหมด"
+ต้องเห็น completed jobs (ถ้าว่างเปล่า แปลว่าตั้ง `removeOnComplete: true` อยู่ ต้องเปลี่ยนเป็นค่าที่เก็บ
+ประวัติไว้บ้าง — ปัจจุบันโค้ดตั้งเป็น `removeOnComplete: 500` / `removeOnFail: 500` ซึ่งพอสำหรับแคป
+หน้าจอส่งอาจารย์อยู่แล้ว ไม่ต้องเปลี่ยนเป็น `false` เพราะจะเก็บ job ไม่มีที่สิ้นสุดจน Redis โป่งถ้ารันนานๆ)
+และเห็น failed jobs ของเคส "ของหมด"
 
 ## รายงานผล
 

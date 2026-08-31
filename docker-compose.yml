@@ -27,7 +27,13 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes --tcp-backlog 65535 --maxmemory 1gb --maxmemory-policy noeviction --save ""
+    # หมายเหตุ: ปิด AOF (--appendonly no) เช่นเดียวกับที่ปิด RDB (--save "") ไปแล้ว —
+    # Redis ในระบบนี้เป็นแค่ broker/lock ชั่วคราว (source of truth จริงคือ Postgres
+    # ที่ worker commit เข้าไป) ไม่ใช่ที่เก็บข้อมูลถาวร ตอนเปิด AOF ไว้ ทุกคำสั่งเขียน
+    # (SETNX ล็อก + BullMQ enqueue ที่ทำงานทุก order) ต้องรอ fsync ก่อนตอบกลับ ซึ่งบน
+    # disk แบบ virtualized (Docker Desktop / cloud VM) fsync มีโอกาสหน่วงกระทันหันเป็น
+    # วินาที ทำให้ write path ช้าเฉพาะจังหวะนั้น (อ่านไม่กระทบเพราะเป็นคำสั่งอ่านอย่างเดียว)
+    command: redis-server --appendonly no --tcp-backlog 65535 --maxmemory 1gb --maxmemory-policy noeviction --save ""
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s

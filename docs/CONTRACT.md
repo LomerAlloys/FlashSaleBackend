@@ -64,7 +64,14 @@ Error ที่ตกลงกันไว้:
 - ชื่อคิว: `order-queue`
 - Job data: `{ "userId": "user-1", "productId": "p-1001" }`
 - `jobId` = `` `${userId}:${productId}` `` (BullMQ จะกันงานซ้ำให้อีกชั้นโดยอัตโนมัติ)
-- Job options: `attempts: 3`, `backoff: { type: 'exponential', delay: 200 }`, `removeOnComplete: false` (ต้องเก็บไว้โชว์ใน Bull-Board)
+- Job options: `attempts: 3`, `backoff: { type: 'exponential', delay: 200 }`, `removeOnComplete: 500`, `removeOnFail: 500`
+  (เก็บ 500 job ล่าสุดไว้โชว์ใน Bull-Board ตามข้อกำหนด Queue Monitoring ในสเปก — ใช้ `false`
+  ไม่ได้เพราะ Redis จะโป่งไม่มีที่สิ้นสุดถ้ารันนาน ใช้ `true` ก็ไม่ได้เพราะ Dashboard จะไม่มี
+  ประวัติ Completed/Failed ให้ดูเลย)
+- Worker concurrency: `5` ต่อ container (ดู `src/worker/order.processor.ts`) — ทดสอบจริงแล้วว่า
+  `concurrency: 50` **ไม่ได้ช่วย** เพราะออเดอร์ทั้งหมดชนกันที่แถวสินค้าเดียวกัน (`p-1001`) ซึ่งถูก
+  serialize ด้วย `SELECT...FOR UPDATE` อยู่แล้ว ยิ่ง concurrency สูงยิ่งมี worker ไปรอ lock เฉยๆ
+  แถมยังแย่ง Redis round-trip กับ API จนทำให้ write p95 แย่ลง (ดู commit `4b3fbb8`)
 
 ## 6. กฎเหล็ก
 1. Controller ของ `POST /orders` **ห้าม** เขียน DB — ต้อง enqueue แล้วตอบ 202 ทันที

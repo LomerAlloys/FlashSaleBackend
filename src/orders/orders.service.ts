@@ -32,28 +32,34 @@ export class OrdersService {
       throw new NotFoundException(`Product ${productId} not found`);
     }
 
-    const jobId = `${userId}_${productId}`;
+    // 3. Fast Enqueue into BullMQ — ต้อง await เสมอ ไม่งั้นตอบ 202 ไปแล้วทั้งที่ enqueue อาจ fail จริง
+    // (เช่น jobId ซ้ำ ต้องแปลงเป็น 409 ตาม contract — non-blocking แบบไม่ await ทำแบบนั้นไม่ได้
+    // เพราะ response ถูกส่งไปก่อนที่จะรู้ผลด้วยซ้ำ)
+    try {
+      const job = await this.ordersQueue.add(
+        'process-order',
+        { userId, productId },
+        {
+          jobId: `${userId}_${productId}`,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 200 },
+          removeOnComplete: 500,
+          removeOnFail: 500,
+        },
+      );
 
-    // 3. Non-Blocking High-Speed Enqueue (ส่งเข้า Queue ทันที + เก็บประวัติ 500 jobs สำหรับ Bull-Board)
-    this.ordersQueue.add(
-      'process-order',
-      { userId, productId },
-      {
-        jobId,
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 200 },
-        removeOnComplete: 500,
-        removeOnFail: 500,
-      },
-    ).catch(async (err) => {
-      await this.redis.del(userOrderLockKey).catch(() => {});
-    });
-
-    // 4. ตอบกลับ 202 Accepted ทันทีในระดับ Sub-millisecond (< 5ms)
-    return {
-      status: 'processing',
-      orderJobId: `job-${jobId}`,
-      message: 'Your order is in the queue.',
-    };
+      return {
+        status: 'processing',
+        orderJobId: `job-${job.id}`,
+        message: 'Your order is in the queue.',
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.toLowerCase().includes('already exists')) {
+        throw new ConflictException('You have already submitted an order for this product.');
+      }
+      await this.redis.del(userOrderLockKey);
+      throw err;
+    }
   }
 }

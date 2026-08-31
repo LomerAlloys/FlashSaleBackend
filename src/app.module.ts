@@ -49,7 +49,7 @@ import { OrdersModule } from './orders/orders.module';
       entities: [Product, Order],
       synchronize: false, // ❗ schema มาจาก migration เท่านั้น (npm run migration:run)
       extra: {
-        max: 15,
+        max: 30,
       },
     }),
     

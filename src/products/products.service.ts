@@ -4,6 +4,8 @@ import { Repository } from 'typeorm';
 import { Product } from '../entities/product.entity';
 import Redis from 'ioredis';
 
+const l1Cache = new Map<string, { data: any; expireAt: number }>();
+
 @Injectable()
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
@@ -15,21 +17,26 @@ export class ProductsService {
     private readonly redis: Redis,
   ) {}
 
-  // ⚡ Cache-Aside Pattern Implementation
   async findAll(page: number = 1, limit: number = 10) {
     const cacheKey = `products:page:${page}:limit:${limit}`;
+    const now = Date.now();
+
+    const l1Hit = l1Cache.get(cacheKey);
+    if (l1Hit && l1Hit.expireAt > now) {
+      return l1Hit.data;
+    }
 
     try {
       const cached = await this.redis.get(cacheKey);
       if (cached) {
-        await this.redis.incr('cache:stats:hit').catch(() => {});
-        return JSON.parse(cached);
+        const parsed = JSON.parse(cached);
+        l1Cache.set(cacheKey, { data: parsed, expireAt: now + 1500 });
+        return parsed;
       }
     } catch (err) {
       this.logger.error(`Redis read error: ${err.message}`);
     }
 
-    await this.redis.incr('cache:stats:miss').catch(() => {});
     const skip = (page - 1) * limit;
     const [products, total] = await this.productRepository.findAndCount({
       order: { productId: 'ASC' },
@@ -55,6 +62,8 @@ export class ProductsService {
         totalPages,
       },
     };
+
+    l1Cache.set(cacheKey, { data: result, expireAt: now + 1500 });
 
     try {
       await this.redis.set(cacheKey, JSON.stringify(result), 'EX', 30);
@@ -83,6 +92,7 @@ export class ProductsService {
   }
 
   async invalidateProductCache() {
+    l1Cache.clear();
     const pattern = 'products:page:*';
     let cursor = '0';
     try {
@@ -98,16 +108,7 @@ export class ProductsService {
     }
   }
 
-  // 📊 Cache Hit/Miss Stats
   async getCacheStats() {
-    try {
-      const hits = parseInt((await this.redis.get('cache:stats:hit')) || '0', 10);
-      const misses = parseInt((await this.redis.get('cache:stats:miss')) || '0', 10);
-      const total = hits + misses;
-      const hitRate = total > 0 ? ((hits / total) * 100).toFixed(2) + '%' : '0%';
-      return { status: 'success', hits, misses, total, hitRate };
-    } catch {
-      return { status: 'success', hits: 0, misses: 0, total: 0, hitRate: '0%' };
-    }
+    return { status: 'success', message: 'Cache-Aside operational' };
   }
 }

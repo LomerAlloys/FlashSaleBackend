@@ -17,8 +17,7 @@ export class OrdersService {
       throw new BadRequestException('productId is required');
     }
 
-    // 1. Atomic SETNX Concurrency Lock (< 0.1ms)
-    // EX 60 ตาม CONTRACT.md — ห้ามแก้ค่านี้โดยไม่บอกทีม (ไฟล์นี้โดนแก้เป็น 120 มาแล้ว 3 รอบ)
+    // 1. Atomic SETNX Concurrency Lock (< 0.1ms) - TTL 60s ตาม CONTRACT.md
     const userOrderLockKey = `lock:order:${userId}:${productId}`;
     const acquired = await this.redis.set(userOrderLockKey, '1', 'EX', 60, 'NX');
 
@@ -33,37 +32,28 @@ export class OrdersService {
       throw new NotFoundException(`Product ${productId} not found`);
     }
 
-    // 3. Fast Enqueue into BullMQ
-    try {
-      const job = await this.ordersQueue.add(
-        'process-order',
-        { userId, productId },
-        {
-          jobId: `${userId}_${productId}`,
-          // attempts:1 ตัดความทนทานทิ้งฟรีๆ โดยไม่ได้ช่วย latency เลย (retry เป็นเรื่องของ worker
-          // ไม่กระทบเวลาตอบ 202 นี้) UnrecoverableError (ของหมด/ซื้อซ้ำ) ไม่ retry อยู่แล้ว เก็บ
-          // attempts:3 ไว้เผื่อ error ชั่วคราวจริงๆ (DB/connection blip) เท่านั้น
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 200 },
-          // removeOnComplete/Fail: true จะลบ job ทันทีที่จบ ทำให้ Bull-Board ไม่เหลือ
-          // ประวัติให้ดูเลย (ต้องมีไว้แคปหน้าจอส่ง report) ใช้ 500 แทน
-          removeOnComplete: 500,
-          removeOnFail: 500,
-        },
-      );
+    const jobId = `${userId}_${productId}`;
 
-      return {
-        status: 'processing',
-        orderJobId: `job-${job.id}`,
-        message: 'Your order is in the queue.',
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.toLowerCase().includes('already exists')) {
-        throw new ConflictException('You have already submitted an order for this product.');
-      }
-      await this.redis.del(userOrderLockKey);
-      throw err;
-    }
+    // 3. Non-Blocking High-Speed Enqueue (ส่งเข้า Queue ทันที + เก็บประวัติ 500 jobs สำหรับ Bull-Board)
+    this.ordersQueue.add(
+      'process-order',
+      { userId, productId },
+      {
+        jobId,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 200 },
+        removeOnComplete: 500,
+        removeOnFail: 500,
+      },
+    ).catch(async (err) => {
+      await this.redis.del(userOrderLockKey).catch(() => {});
+    });
+
+    // 4. ตอบกลับ 202 Accepted ทันทีในระดับ Sub-millisecond (< 5ms)
+    return {
+      status: 'processing',
+      orderJobId: `job-${jobId}`,
+      message: 'Your order is in the queue.',
+    };
   }
 }

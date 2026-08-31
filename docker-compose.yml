@@ -143,6 +143,9 @@ services:
     ports:
       - "8080:80"
     volumes:
+      - /dev/shm:/dev/shm
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       api1:
@@ -150,6 +153,8 @@ services:
       api2:
         condition: service_healthy
       api3:
+        condition: service_healthy
+      api4:
         condition: service_healthy
 
 volumes:

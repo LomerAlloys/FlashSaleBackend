@@ -15,10 +15,9 @@ import { check, sleep } from 'k6';
  * ============================================================================
  */
 
-// 🌐 Base URL (รับผ่าน -e BASE_URL= หรือ default เป็น Nginx Port 8080)
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080/api/v1';
 const TOTAL_USERS = 500;
-const DUPLICATE_FRACTION = 0.15; // 15% ของผู้ใช้จะยิงคำสั่งซื้อซ้ำ 2-3 ครั้งพร้อมกัน (Concurrent batch)
+const DUPLICATE_FRACTION = 0.15; // 15% ยิงคำสั่งซื้อซ้ำแบบ Concurrent batch
 
 export const options = {
   scenarios: {
@@ -46,9 +45,9 @@ export const options = {
   },
 };
 
-// 🔑 1. Preparation Phase: วนลูปขอ JWT ให้กับ 500 ผู้ใช้ที่ไม่ซ้ำกันล่วงหน้า
+// 🔑 1. Preparation Phase: วนลูปขอ JWT 500 คนล่วงหน้า
 export function setup() {
-  console.log(`🚀 [1. Preparation Phase] กำลังวนลูปขอ JWT สำหรับผู้ใช้ไม่ซ้ำกัน 500 คน (user-1 ถึง user-${TOTAL_USERS})...`);
+  console.log(`🚀 [1. Preparation Phase] กำลังขอ JWT สำหรับผู้ใช้ไม่ซ้ำกัน 500 คน (user-1 ถึง user-${TOTAL_USERS})...`);
   const tokens = [];
   for (let i = 1; i <= TOTAL_USERS; i++) {
     const res = http.post(
@@ -59,11 +58,11 @@ export function setup() {
     check(res, { 'auth token issued (200/201)': (r) => r.status === 200 || r.status === 201 });
     tokens.push(res.json('accessToken'));
   }
-  console.log(`✅ [Preparation Complete] ได้รับ JWT Tokens ครบทั้ง 500 คนแล้ว พร้อมเริ่มการยิงโหลด!`);
+  console.log(`✅ [Preparation Complete] ได้รับ JWT Tokens ครบทั้ง 500 คนแล้ว!`);
   return { tokens };
 }
 
-// 📖 2. Read Load: 1,000 Concurrent VUs ยิง HTTP GET /api/v1/products?page=X&limit=Y
+// 📖 2. Read Load: 1,000 Concurrent VUs อ่านสินค้า (ใส่ sleep 0.05s เพื่อ pacing ที่สมจริง)
 export function readLoad() {
   const page = (__VU % 4) + 1;
   const limit = 10;
@@ -72,9 +71,10 @@ export function readLoad() {
     'read: status 200': (r) => r.status === 200,
     'read: status success': (r) => r.json('status') === 'success',
   });
+  sleep(0.05); // 👈 50ms pacing ป้องกัน client socket saturation
 }
 
-// 🛍️ 3. Write Load: 500 Concurrent requests ยิง HTTP POST /api/v1/orders แย่งซื้อ p-1001 พร้อมยิงเบิ้ล
+// 🛍️ 3. Write Load: 500 Concurrent requests แย่งซื้อ p-1001 พร้อมยิงเบิ้ล
 export function writeLoad(data) {
   const vuIndex = (__VU - 1) % TOTAL_USERS;
   const token = data.tokens[vuIndex];
@@ -85,7 +85,6 @@ export function writeLoad(data) {
   const body = JSON.stringify({ productId: 'p-1001' });
 
   if (Math.random() < DUPLICATE_FRACTION) {
-    // จำลองผู้ใช้กดย้ำรวดเดียว 2-3 ครั้งพร้อมกัน (Concurrent duplicate batch)
     const shots = 2 + Math.floor(Math.random() * 2);
     const batchReqs = {};
     for (let i = 0; i < shots; i++) {
@@ -104,7 +103,6 @@ export function writeLoad(data) {
       });
     });
   } else {
-    // สั่งซื้อตามปกติ 1 ครั้ง
     const res = http.post(`${BASE_URL}/orders`, body, { headers });
     check(res, {
       'write: accepted (202) or duplicate-blocked (409)': (r) =>

@@ -1,7 +1,18 @@
+# ⚡ ulimit ของ container ไม่ inherit จาก host โดยอัตโนมัติ (แม้ host จะ tune
+# /etc/security/limits.conf ไว้ 65535 แล้ว Docker ก็ยัง fallback เป็นค่า default
+# ของตัวเอง ~1024 ให้ทุก container เว้นแต่ระบุตรงนี้) — ต้องประกาศตายตัวไว้ที่นี่
+# เพื่อให้ "1-click deploy" ได้ผลลัพธ์เดิมไม่ว่าจะรันบนเครื่องไหน โดยไม่ต้องพึ่งการ
+# ตั้งค่า host ด้วยมือแยกต่างหาก
+x-ulimits: &nofile-65535
+  nofile:
+    soft: 65535
+    hard: 65535
+
 services:
   # 📌 1. PostgreSQL (single instance, no replication)
   postgres:
     image: bitnami/postgresql:latest
+    ulimits: *nofile-65535
     volumes:
       - postgres-data:/bitnami/postgresql
     environment:
@@ -23,6 +34,7 @@ services:
   # 📌 2. Redis
   redis:
     image: redis:7-alpine
+    ulimits: *nofile-65535
     ports:
       - "6379:6379"
     volumes:
@@ -59,6 +71,7 @@ services:
   # 📌 4. API Instance 1
   api1:
     build: .
+    ulimits: *nofile-65535
     ports:
       - "3001:3000"
     environment:
@@ -88,6 +101,7 @@ services:
   # 📌 5. API Instance 2
   api2:
     build: .
+    ulimits: *nofile-65535
     ports:
       - "3002:3000"
     environment:
@@ -117,6 +131,7 @@ services:
   # 📌 6. API Instance 3
   api3:
     build: .
+    ulimits: *nofile-65535
     ports:
       - "3003:3000"
     environment:
@@ -146,6 +161,7 @@ services:
   # 📌 7. API Instance 4 (Match 4 CPU Cores)
   api4:
     build: .
+    ulimits: *nofile-65535
     ports:
       - "3004:3000"
     environment:
@@ -175,6 +191,13 @@ services:
   # 📌 8. Nginx Load Balancer
   nginx:
     image: nginx:alpine
+    ulimits: *nofile-65535
+    # net.core.somaxconn ผูกกับ network namespace ของแต่ละ container ได้ (ตั้งแต่
+    # kernel รองรับ net namespace) เลยกำหนดตรงนี้แทนการพึ่ง sysctl ระดับ host —
+    # ให้ `listen 80 backlog=16384` ใน nginx.conf มีผลจริง ไม่ถูก OS ตัดเหลือ backlog
+    # default (มักเป็น 128) แม้ deploy บนเครื่องที่ยังไม่เคย tune อะไรเลยก็ตาม
+    sysctls:
+      - net.core.somaxconn=65535
     ports:
       - "8080:80"
     volumes:

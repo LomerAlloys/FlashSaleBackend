@@ -17,7 +17,7 @@ export class OrdersService {
       throw new BadRequestException('productId is required');
     }
 
-    // 1. Atomic SETNX Concurrency Lock (< 0.1ms) - TTL 60s
+    // 1. Atomic SETNX Concurrency Lock (< 0.1ms) - TTL 60s ตาม CONTRACT.md
     const userOrderLockKey = `lock:order:${userId}:${productId}`;
     const acquired = await this.redis.set(userOrderLockKey, '1', 'EX', 60, 'NX');
 
@@ -32,27 +32,32 @@ export class OrdersService {
       throw new NotFoundException(`Product ${productId} not found`);
     }
 
-    const jobId = `${userId}_${productId}`;
+    // 3. Fast Enqueue into BullMQ — ต้อง await เสมอ เพื่อจับข้อผิดพลาด (เช่น jobId ซ้ำ) และแปลงเป็น 409
+    try {
+      const job = await this.ordersQueue.add(
+        'process-order',
+        { userId, productId },
+        {
+          jobId: `${userId}_${productId}`,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 200 },
+          removeOnComplete: 500,
+          removeOnFail: 500,
+        },
+      );
 
-    // 3. Lightning Fast BullMQ Enqueue (removeOnComplete: true disables sorted set overhead in Redis)
-    this.ordersQueue.add(
-      'process-order',
-      { userId, productId },
-      {
-        jobId,
-        attempts: 1,
-        removeOnComplete: true,
-        removeOnFail: true,
-      },
-    ).catch(async (err) => {
-      await this.redis.del(userOrderLockKey).catch(() => {});
-    });
-
-    // 4. Instant 202 Accepted response (< 5ms)
-    return {
-      status: 'processing',
-      orderJobId: `job-${jobId}`,
-      message: 'Your order is in the queue.',
-    };
+      return {
+        status: 'processing',
+        orderJobId: `job-${job.id}`,
+        message: 'Your order is in the queue.',
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.toLowerCase().includes('already exists')) {
+        throw new ConflictException('You have already submitted an order for this product.');
+      }
+      await this.redis.del(userOrderLockKey);
+      throw err;
+    }
   }
 }

@@ -3,7 +3,6 @@ import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
 import { LoggerModule } from 'nestjs-pino';
-import { randomUUID } from 'crypto';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -19,26 +18,16 @@ import { OrdersModule } from './orders/orders.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    
-    // 📌 Structured Log (Pino)
+
+    // 📌 Structured Log (Pino) - ตั้งค่า level: warn และ autoLogging: false เพื่อความเร็วสูงสุด
     LoggerModule.forRoot({
       pinoHttp: {
-        // production: log แค่ warn/error ขึ้นไป — ตัด log "request completed" ทุก request
-        // ทิ้ง (ถูกๆ ตอน dev แต่กิน CPU จริงตอนโหลดสูง เพราะต้อง serialize req/res ทุกครั้ง)
-        level: process.env.NODE_ENV === 'production' ? 'warn' : 'info',
-        genReqId: (req) => req.headers['x-correlation-id'] || randomUUID(),
-        customProps: () => ({
-          instanceId: process.env.INSTANCE_ID || 'Unknown Instance',
-        }),
-        // ตัด header เต็มๆ ออกจาก log ที่ยังเหลือ (error/warn) ให้ serialize เบาลง
-        serializers: {
-          req: (req) => ({ method: req.method, url: req.url }),
-          res: (res) => ({ statusCode: res.statusCode }),
-        },
+        level: 'warn',
+        autoLogging: false,
       },
     }),
 
-    // 🗄️ PostgreSQL Database Connection (ใช้ชื่อ flash_sale_db)
+    // 🗄️ PostgreSQL Database Connection
     TypeOrmModule.forRoot({
       type: 'postgres',
       host: process.env.DB_HOST || 'localhost',
@@ -47,12 +36,12 @@ import { OrdersModule } from './orders/orders.module';
       password: String(process.env.DB_PASSWORD || 'mypassword'),
       database: String(process.env.DB_NAME || 'flash_sale_db'),
       entities: [Product, Order],
-      synchronize: false, // ❗ schema มาจาก migration เท่านั้น (npm run migration:run)
+      synchronize: false,
       extra: {
-        max: 30,
+        max: 25,
       },
     }),
-    
+
     // 📨 BullMQ Configuration
     BullModule.forRoot({
       connection: {
@@ -60,7 +49,7 @@ import { OrdersModule } from './orders/orders.module';
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
       },
     }),
-    
+
     AuthModule,
     ProductsModule,
     OrdersModule,

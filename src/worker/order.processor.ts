@@ -6,7 +6,7 @@ import { Product } from '../entities/product.entity';
 import { Order } from '../entities/order.entity';
 import { ProductsService } from '../products/products.service';
 
-@Processor('order-queue')
+@Processor('order-queue', { concurrency: 25 })
 export class OrderProcessor extends WorkerHost {
   private readonly logger = new Logger(OrderProcessor.name);
 

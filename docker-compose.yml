@@ -43,10 +43,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # 📌 3. One-off migration runner — ทำให้ `docker compose up` เป็น 1-click start จริง
-  #    (ไม่ต้องรัน `npm run migration:run` แยกเองอีกต่อไป; ไม่พึ่ง init.sql auto-init
-  #    ที่พิสูจน์แล้วว่าไม่เสถียร — ใช้ TypeORM migration ที่เทสผ่านจริงเป็นหลักเสมอ
-  #    migration ถูกเขียนให้ idempotent (hasTable/ON CONFLICT) อยู่แล้ว ปลอดภัยแม้รันซ้ำ)
+  # 📌 3. One-off migration runner
   migrate:
     build:
       context: .
@@ -149,7 +146,36 @@ services:
       retries: 10
       start_period: 10s
 
-  # 📌 7. Nginx Load Balancer
+  # 📌 7. API Instance 4 (Match 4 CPU Cores)
+  api4:
+    build: .
+    ports:
+      - "3004:3000"
+    environment:
+      - INSTANCE_ID=Instance-4
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=myuser
+      - DB_PASSWORD=mypassword
+      - DB_NAME=flash_sale_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=local-dev-flash-sale-jwt-secret-do-not-use-in-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/v1/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # 📌 8. Nginx Load Balancer
   nginx:
     image: nginx:alpine
     ports:
